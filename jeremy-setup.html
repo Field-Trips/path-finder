@@ -1,0 +1,558 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Field Trips Path-Finder — Jeremy's Setup Guide</title>
+<style>
+  :root {
+    --green: #16a34a;
+    --green-light: #dcfce7;
+    --yellow: #ca8a04;
+    --yellow-light: #fefce8;
+    --red: #dc2626;
+    --red-light: #fef2f2;
+    --blue: #2563eb;
+    --blue-light: #eff6ff;
+    --gray: #6b7280;
+    --gray-light: #f9fafb;
+    --border: #e5e7eb;
+    --text: #111827;
+    --text-muted: #6b7280;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+    color: var(--text);
+    background: #fff;
+    max-width: 780px;
+    margin: 0 auto;
+    padding: 40px 24px 80px;
+  }
+
+  /* ── Header ── */
+  .header { border-bottom: 2px solid var(--border); padding-bottom: 28px; margin-bottom: 40px; }
+  .header h1 { font-size: 28px; font-weight: 700; margin-bottom: 8px; }
+  .header p { color: var(--text-muted); font-size: 15px; }
+  .header .time-note { margin-top: 12px; background: var(--blue-light); border-left: 3px solid var(--blue); padding: 10px 14px; border-radius: 0 6px 6px 0; font-size: 14px; color: #1e40af; }
+
+  /* ── Progress bar ── */
+  .progress-bar { display: flex; gap: 4px; margin-bottom: 48px; }
+  .progress-step { flex: 1; height: 5px; background: var(--border); border-radius: 3px; }
+  .progress-step.done { background: var(--green); }
+  .progress-step.active { background: var(--blue); }
+
+  /* ── Step ── */
+  .step { margin-bottom: 56px; }
+  .step-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 18px;
+  }
+  .step-num {
+    width: 36px; height: 36px;
+    background: var(--text);
+    color: white;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 15px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .step-header h2 { font-size: 20px; font-weight: 700; }
+  .step-header .step-note { font-size: 13px; color: var(--text-muted); font-weight: 400; margin-left: 4px; }
+
+  p { margin-bottom: 14px; }
+
+  /* ── Code blocks ── */
+  .cmd-block {
+    background: #1e1e1e;
+    color: #d4d4d4;
+    border-radius: 8px;
+    padding: 14px 16px;
+    font-family: "SF Mono", "Menlo", "Monaco", monospace;
+    font-size: 14px;
+    line-height: 1.5;
+    margin: 14px 0;
+    position: relative;
+    overflow-x: auto;
+  }
+  .cmd-block .copy-btn {
+    position: absolute;
+    top: 8px; right: 10px;
+    background: #3a3a3a;
+    color: #aaa;
+    border: none;
+    border-radius: 4px;
+    padding: 3px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .cmd-block .copy-btn:hover { background: #555; color: #fff; }
+  .cmd-block .copy-btn.copied { background: var(--green); color: #fff; }
+
+  /* ── Check boxes ── */
+  .check {
+    background: var(--green-light);
+    border: 1px solid #86efac;
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin: 14px 0;
+    font-size: 14px;
+  }
+  .check strong { color: var(--green); }
+  .check code { background: #bbf7d0; padding: 1px 5px; border-radius: 3px; font-family: monospace; font-size: 13px; }
+
+  /* ── Warn / trouble boxes ── */
+  .warn {
+    background: var(--yellow-light);
+    border: 1px solid #fde68a;
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin: 14px 0;
+    font-size: 14px;
+  }
+  .warn strong { color: var(--yellow); }
+  .trouble {
+    background: var(--red-light);
+    border: 1px solid #fca5a5;
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin: 14px 0;
+    font-size: 14px;
+  }
+  .trouble strong { color: var(--red); }
+
+  /* ── Info box ── */
+  .info {
+    background: var(--blue-light);
+    border: 1px solid #93c5fd;
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin: 14px 0;
+    font-size: 14px;
+    color: #1e3a8a;
+  }
+
+  /* ── Image / screenshot placeholder ── */
+  .screenshot {
+    border: 2px dashed var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 13px;
+    margin: 14px 0;
+  }
+
+  /* ── Section divider ── */
+  hr { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+
+  /* ── Inline code ── */
+  code {
+    background: #f3f4f6;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: "SF Mono", "Menlo", monospace;
+    font-size: 13px;
+  }
+
+  /* ── Success banner ── */
+  .success-banner {
+    background: var(--green);
+    color: white;
+    border-radius: 10px;
+    padding: 24px;
+    text-align: center;
+    margin-top: 48px;
+  }
+  .success-banner h2 { font-size: 22px; margin-bottom: 8px; }
+  .success-banner p { opacity: 0.9; font-size: 15px; }
+
+  /* ── Numbered list ── */
+  ol, ul { padding-left: 22px; margin-bottom: 14px; }
+  li { margin-bottom: 6px; }
+
+  /* ── Bold labels ── */
+  .label { font-weight: 600; }
+
+  /* ── "Ask Sarah" badge ── */
+  .ask-sarah {
+    display: inline-block;
+    background: #faf5ff;
+    border: 1px solid #c084fc;
+    color: #7e22ce;
+    border-radius: 4px;
+    padding: 1px 8px;
+    font-size: 12px;
+    font-weight: 600;
+    margin-left: 4px;
+    vertical-align: middle;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Field Trips — Path-Finder Setup</h1>
+  <p>This guide gets you from scratch to running the path-finder on your laptop and contributing to the shared database. Follow the steps in order — each one builds on the last.</p>
+  <div class="time-note">⏱ Takes about 20–30 minutes total, mostly waiting for downloads. You only have to do this once.</div>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────── -->
+<div class="step">
+  <div class="step-header">
+    <div class="step-num">1</div>
+    <h2>Open Terminal <span class="step-note">— you already did this ✓</span></h2>
+  </div>
+
+  <p>Terminal is a text window where you type commands. You found it already. Leave it open for the rest of this guide.</p>
+
+  <div class="info">
+    💡 <strong>How to use this guide:</strong> Each command block has a <strong>Copy</strong> button in the top-right corner. Click it, then click inside your Terminal window, and press <strong>⌘V</strong> (Command+V) to paste. Then press <strong>Enter</strong> to run it.
+  </div>
+
+  <div class="warn">
+    <strong>⚠️ You may see a message about zsh</strong><br>
+    If Terminal says "The default interactive shell is now zsh", that's fine — ignore it and keep going.
+  </div>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────── -->
+<div class="step">
+  <div class="step-header">
+    <div class="step-num">2</div>
+    <h2>Install Homebrew</h2>
+  </div>
+
+  <p>Homebrew is a package manager — it's the easiest way to install developer tools on a Mac. Think of it as the App Store, but for programming tools.</p>
+
+  <p>Paste this into Terminal and press Enter:</p>
+
+  <div class="cmd-block">
+    <button class="copy-btn" onclick="copyCmd(this)">Copy</button>
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  </div>
+
+  <p>This will ask for your <strong>Mac login password</strong> (the one you use to unlock your computer). Type it and press Enter — the characters won't show up as you type, that's normal.</p>
+
+  <p>It also may ask you to press Enter to confirm. It'll then download and install for a few minutes.</p>
+
+  <div class="check">
+    <strong>✅ How to know it worked:</strong><br>
+    When it's done, you'll see a line that says <code>Installation successful!</code> or you'll just get a new prompt like <code>jeremyhinen$</code>.
+  </div>
+
+  <p>If your Mac is an <strong>Apple Silicon Mac</strong> (M1, M2, M3, or M4 chip — bought after late 2020), Homebrew installs in a different location and you'll need to run one more line after installation. If the installer tells you to run something that starts with <code>eval</code>, copy and paste that line and run it too.</p>
+
+  <div class="check">
+    <strong>✅ Verify Homebrew works:</strong><br>
+    Paste this and press Enter:
+    <div class="cmd-block" style="margin-top:10px; margin-bottom:0">
+      <button class="copy-btn" onclick="copyCmd(this)">Copy</button>
+      brew --version
+    </div>
+    You should see something like <code>Homebrew 4.x.x</code>. If you do, Homebrew is working.
+  </div>
+
+  <div class="trouble">
+    <strong>❌ If brew --version says "command not found":</strong><br>
+    Your Mac is probably Apple Silicon. Run this:
+    <div class="cmd-block" style="margin-top:10px; margin-bottom:4px">
+      <button class="copy-btn" onclick="copyCmd(this)">Copy</button>
+      echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile && eval "$(/opt/homebrew/bin/brew shellenv)"
+    </div>
+    Then try <code>brew --version</code> again.
+  </div>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────── -->
+<div class="step">
+  <div class="step-header">
+    <div class="step-num">3</div>
+    <h2>Install Python and Git</h2>
+  </div>
+
+  <p>Python is the programming language the path-finder is written in. Git is the tool that downloads and tracks code. Install both in one command:</p>
+
+  <div class="cmd-block">
+    <button class="copy-btn" onclick="copyCmd(this)">Copy</button>
+    brew install python@3.12 git
+  </div>
+
+  <p>This takes 2–5 minutes. You'll see a lot of text scrolling by — that's normal.</p>
+
+  <div class="check">
+    <strong>✅ Verify:</strong>
+    <div class="cmd-block" style="margin-top:10px; margin-bottom:4px">
+      <button class="copy-btn" onclick="copyCmd(this)">Copy</button>
+      python3.12 --version && git --version
+    </div>
+    You should see two lines, something like:<br>
+    <code>Python 3.12.x</code><br>
+    <code>git version 2.x.x</code>
+  </div>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────── -->
+<div class="step">
+  <div class="step-header">
+    <div class="step-num">4</div>
+    <h2>Create a GitHub account &amp; get access <span class="ask-sarah">Ask Sarah</span></h2>
+  </div>
+
+  <p>The path-finder code lives on GitHub, a website for storing code. You need an account to download it.</p>
+
+  <ol>
+    <li>Go to <a href="https://github.com" target="_blank"><strong>github.com</strong></a> and click <strong>Sign up</strong></li>
+    <li>Use any email address and pick a username. Write it down — you'll need it.</li>
+    <li>Complete the verification and confirm your email.</li>
+    <li><strong>Send Sarah your GitHub username</strong> — she'll add you to the Field Trips organization so you can access the private repo.</li>
+    <li>Once Sarah adds you, you'll get an email from GitHub — click <strong>Accept invitation</strong>.</li>
+  </ol>
+
+  <div class="warn">
+    ⚠️ <strong>Wait until you've accepted the invitation before going to Step 5.</strong>
+  </div>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────── -->
+<div class="step">
+  <div class="step-header">
+    <div class="step-num">5</div>
+    <h2>Download the path-finder code</h2>
+  </div>
+
+  <p>First, tell Git who you are. Replace the name and email with your own:</p>
+
+  <div class="cmd-block">
+    <button class="copy-btn" onclick="copyCmd(this)">Copy</button>
+    git config --global user.name "Jeremy Hinen"
+  </div>
+  <div class="cmd-block">
+    <button class="copy-btn" onclick="copyCmd(this)">Copy</button>
+    git config --global user.email "your@email.com"
+  </div>
+
+  <p>Now download (clone) the path-finder repo into a folder called <code>field-trips</code> on your computer:</p>
+
+  <div class="cmd-block">
+    <button class="copy-btn" onclick="copyCmd(this)">Copy</button>
+    mkdir -p ~/field-trips && cd ~/field-trips && git clone https://github.com/Field-Trips/path-finder.git && cd path-finder
+  </div>
+
+  <p>When it asks for your GitHub <strong>username</strong> and <strong>password</strong>: the password is <strong>not</strong> your GitHub account password — it's a Personal Access Token. Create one like this:</p>
+
+  <ol>
+    <li>Go to <a href="https://github.com/settings/tokens/new" target="_blank">github.com/settings/tokens/new</a></li>
+    <li>Give it a name like <code>field-trips</code></li>
+    <li>Set expiration to <strong>No expiration</strong></li>
+    <li>Under "Select scopes", check <strong>repo</strong></li>
+    <li>Click <strong>Generate token</strong></li>
+    <li>Copy the token (it starts with <code>ghp_</code>) — <strong>save it somewhere safe, you can't see it again</strong></li>
+  </ol>
+
+  <p>Use that token as the password when Git asks.</p>
+
+  <div class="check">
+    <strong>✅ Verify:</strong>
+    <div class="cmd-block" style="margin-top:10px; margin-bottom:4px">
+      <button class="copy-btn" onclick="copyCmd(this)">Copy</button>
+      ls ~/field-trips/path-finder/src/
+    </div>
+    You should see <code>path_finder.py</code> in the output.
+  </div>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────── -->
+<div class="step">
+  <div class="step-header">
+    <div class="step-num">6</div>
+    <h2>Set up the Python environment</h2>
+  </div>
+
+  <p>This creates an isolated space for the path-finder's dependencies (extra Python libraries it needs) and installs them:</p>
+
+  <div class="cmd-block">
+    <button class="copy-btn" onclick="copyCmd(this)">Copy</button>
+    cd ~/field-trips/path-finder && python3.12 -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
+  </div>
+
+  <p>This takes 1–3 minutes and shows a lot of text — that's normal. You'll see "Successfully installed …" at the end.</p>
+
+  <div class="check">
+    <strong>✅ Verify:</strong>
+    <div class="cmd-block" style="margin-top:10px; margin-bottom:4px">
+      <button class="copy-btn" onclick="copyCmd(this)">Copy</button>
+      cd ~/field-trips/path-finder && .venv/bin/python -m src.path_finder --help
+    </div>
+    You should see: <code>Usage: python -m src.path_finder [OPTIONS] COMMAND [ARGS]...</code>
+  </div>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────── -->
+<div class="step">
+  <div class="step-header">
+    <div class="step-num">7</div>
+    <h2>Add your API keys <span class="ask-sarah">Ask Sarah</span></h2>
+  </div>
+
+  <p>The path-finder needs two secret keys to work — one to call Claude (AI that picks each Wikipedia hop), one to save results to the shared database. <strong>Sarah will send these to you.</strong></p>
+
+  <p>Create the file that holds them:</p>
+
+  <div class="cmd-block">
+    <button class="copy-btn" onclick="copyCmd(this)">Copy</button>
+    cd ~/field-trips/path-finder && cp .env.example .env && open -e .env
+  </div>
+
+  <p>This opens the file in TextEdit. You'll see:</p>
+  <div class="cmd-block">
+ANTHROPIC_API_KEY=
+SUPABASE_URL=https://vjikcsifkvphuiwjrmqi.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=
+  </div>
+
+  <p>Fill in the two blank values with what Sarah sends you. The line should look like:</p>
+  <div class="cmd-block">
+ANTHROPIC_API_KEY=sk-ant-api03-...your key here...
+SUPABASE_SERVICE_ROLE_KEY=eyJhbGci...your key here...
+  </div>
+
+  <p>Save the file (<strong>⌘S</strong>) and close TextEdit.</p>
+
+  <div class="warn">
+    ⚠️ <strong>Keep these keys private.</strong> Don't share them in email or Slack — send them via iMessage instead. The <code>.env</code> file is never uploaded to GitHub.
+  </div>
+
+  <div class="check">
+    <strong>✅ Verify the database connection:</strong>
+    <div class="cmd-block" style="margin-top:10px; margin-bottom:4px">
+      <button class="copy-btn" onclick="copyCmd(this)">Copy</button>
+      cd ~/field-trips/path-finder && .venv/bin/python -c "
+from dotenv import load_dotenv; load_dotenv(override=True)
+import os
+from supabase import create_client
+from supabase.client import ClientOptions
+sb = create_client(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SERVICE_ROLE_KEY'], options=ClientOptions(schema='path_finder'))
+result = sb.table('nodes').select('id,title').limit(5).execute()
+print('Connected! Nodes in database:', len(result.data))
+for n in result.data: print(' -', n['title'])
+"
+    </div>
+    You should see: <code>Connected! Nodes in database: 3</code> (or more as the database grows).
+  </div>
+
+  <div class="trouble">
+    <strong>❌ If you see an auth error:</strong><br>
+    The key in your <code>.env</code> file might have an extra space. Open the file again (<code>open -e ~/field-trips/path-finder/.env</code>) and make sure there's no space between the <code>=</code> and the key value.
+  </div>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────── -->
+<div class="step">
+  <div class="step-header">
+    <div class="step-num">8</div>
+    <h2>Run your first path 🎉</h2>
+  </div>
+
+  <p>Everything is set up. Run the interactive path-finder:</p>
+
+  <div class="cmd-block">
+    <button class="copy-btn" onclick="copyCmd(this)">Copy</button>
+    cd ~/field-trips/path-finder && python run.py
+  </div>
+
+  <p>It will ask you three questions:</p>
+
+  <ol>
+    <li><strong>Start Wikipedia article</strong> — type something like <code>Monhegan</code></li>
+    <li><strong>End Wikipedia article</strong> — type something like <code>Conservation movement</code></li>
+    <li><strong>Permutations</strong> — type <code>1</code> for your first test</li>
+  </ol>
+
+  <p>Then it'll run for 30–90 seconds and show you the path it found, like:</p>
+
+  <div class="cmd-block" style="color:#86efac">
+[1] ✓  via coastal island ecology<br>
+&nbsp;&nbsp;&nbsp;&nbsp;Monhegan, Maine → Protected area → Conservation movement
+  </div>
+
+  <p>That path is now saved in the shared Field Trips database. You and Sarah are both contributing to the same dataset.</p>
+
+  <div class="check">
+    <strong>✅ You're fully set up.</strong><br>
+    From now on, whenever you want to run the path-finder, just open Terminal and type:<br>
+    <code>cd ~/field-trips/path-finder && python run.py</code>
+  </div>
+</div>
+
+<!-- ─────────────────────────────────────────────────────────── -->
+<hr>
+
+<div class="step">
+  <div class="step-header">
+    <div class="step-num" style="background:#6b7280">?</div>
+    <h2>Getting future updates</h2>
+  </div>
+
+  <p>When Sarah makes changes to the path-finder, pull them down with:</p>
+
+  <div class="cmd-block">
+    <button class="copy-btn" onclick="copyCmd(this)">Copy</button>
+    cd ~/field-trips/path-finder && git pull && pip install -r requirements.txt
+  </div>
+
+  <p>Do this anytime Sarah tells you there's an update.</p>
+</div>
+
+<div class="step">
+  <div class="step-header">
+    <div class="step-num" style="background:#6b7280">?</div>
+    <h2>Common issues</h2>
+  </div>
+
+  <p><strong>Wikipedia page not found</strong><br>
+  The article title has to match Wikipedia exactly. Go to Wikipedia, find the article, and copy the title from the browser tab.</p>
+
+  <p><strong>Path hits the hop cap (shows ×)</strong><br>
+  Some topics are far apart in Wikipedia's link graph. Try a different end article, or run with a higher hop limit by adding <code>--max-hops 15</code> at the end of the command.</p>
+
+  <p><strong>Terminal says "no such file or directory"</strong><br>
+  Make sure you've navigated to the right folder first: <code>cd ~/field-trips/path-finder</code></p>
+
+  <p><strong>The venv isn't activated</strong><br>
+  If you see an error about missing packages, run: <code>source ~/field-trips/path-finder/.venv/bin/activate</code></p>
+
+  <p><strong>Anything else</strong><br>
+  Send the full error message to Sarah.</p>
+</div>
+
+<div class="success-banner">
+  <h2>You're part of the Field Trips database team 🌿</h2>
+  <p>Every path you run adds nodes, connections, and themes to the shared dataset that will eventually power Jeremy's map of Monhegan and beyond.</p>
+</div>
+
+<script>
+function copyCmd(btn) {
+  const block = btn.closest('.cmd-block');
+  // Get text content, excluding the button text
+  const clone = block.cloneNode(true);
+  clone.querySelector('.copy-btn')?.remove();
+  const text = clone.textContent.trim();
+  navigator.clipboard.writeText(text).then(() => {
+    btn.textContent = 'Copied!';
+    btn.classList.add('copied');
+    setTimeout(() => {
+      btn.textContent = 'Copy';
+      btn.classList.remove('copied');
+    }, 1800);
+  });
+}
+</script>
+</body>
+</html>
