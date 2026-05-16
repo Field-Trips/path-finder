@@ -30,7 +30,7 @@ from dotenv import load_dotenv
 from supabase import Client, create_client
 from supabase.client import ClientOptions
 
-load_dotenv()
+load_dotenv(override=True)
 
 # ---------------------------------------------------------------------------
 # Config
@@ -62,6 +62,7 @@ class WikiPage:
     title: str
     url: str
     intro_text: str
+    image_url: Optional[str] = None
     links: list[str] = field(default_factory=list)  # titles of internal wikilinks
 
 
@@ -100,13 +101,14 @@ def fetch_wiki_page(title: str) -> WikiPage:
     title = normalize_title(title)
     headers = {"User-Agent": WIKI_USER_AGENT}
 
-    # 1) Intro extract
+    # 1) Intro extract + lead image (combined into one request)
     extract_params = {
         "action": "query",
         "format": "json",
-        "prop": "extracts",
+        "prop": "extracts|pageimages",
         "exintro": 1,
         "explaintext": 1,
+        "piprop": "original",
         "redirects": 1,
         "titles": title,
     }
@@ -118,6 +120,7 @@ def fetch_wiki_page(title: str) -> WikiPage:
         raise ValueError(f"Wikipedia page not found: {title!r}")
     resolved_title = page.get("title", title)
     intro = page.get("extract", "") or ""
+    image_url: Optional[str] = (page.get("original") or {}).get("source")
 
     # 2) Internal links (paginated)
     links: list[str] = []
@@ -148,6 +151,7 @@ def fetch_wiki_page(title: str) -> WikiPage:
         title=resolved_title,
         url=wiki_url(resolved_title),
         intro_text=intro,
+        image_url=image_url,
         links=links,
     )
 
@@ -157,6 +161,18 @@ def fetch_wiki_page(title: str) -> WikiPage:
 # ---------------------------------------------------------------------------
 
 claude = Anthropic(api_key=ANTHROPIC_API_KEY)
+
+
+def _shortlist_links(links: list[str], visited: set[str], forbidden: set[str], limit: int = 80) -> list[str]:
+    """Filter Wikipedia links to a manageable set before sending to Claude."""
+    import re
+    date_re = re.compile(r"^\d{4}s?$|^\d{1,2} \w+$|^\w+ \d{4}$|^List of |^Index of |^Outline of ")
+    skip = visited | forbidden
+    filtered = [
+        t for t in links
+        if t not in skip and not date_re.match(t) and len(t) > 2
+    ]
+    return filtered[:limit]
 
 
 def pick_next_hop(
@@ -173,21 +189,21 @@ def pick_next_hop(
     the same start/end — we want diverse paths.
 
     Returns: a title from `current.links`.
-
-    TODO(vibe-code):
-      - Trim `current.links` to a manageable shortlist before sending (Wikipedia pages can have 500+ links).
-        Heuristics: skip dates, skip "List of ...", skip overly generic terms; keep proper nouns and concepts.
-      - Add retry/validation: if Claude returns a title not in `current.links`, retry once with a stricter prompt.
-      - Consider returning a short rationale alongside the title for debugging (don't persist it).
     """
-    candidates = current.links  # TODO: shortlist
-    prompt = f"""You are walking the Wikipedia link graph from "{current.title}" toward "{target_title}".
+    candidates = _shortlist_links(current.links, set(visited), forbidden)
+    if not candidates:
+        candidates = [t for t in current.links if t not in set(visited) | forbidden]
+    if not candidates:
+        raise ValueError(f"No valid candidates from {current.title!r}")
+
+    def _ask(candidate_list: list[str]) -> str:
+        prompt = f"""You are walking the Wikipedia link graph from "{current.title}" toward "{target_title}".
 
 You've already visited: {visited}
 Avoid (used by other permutations): {sorted(forbidden)}
 
 From the current page "{current.title}", here are the available internal links:
-{json.dumps(candidates)}
+{json.dumps(candidate_list)}
 
 Pick exactly ONE link that:
 - moves meaningfully closer to "{target_title}",
@@ -195,16 +211,21 @@ Pick exactly ONE link that:
 - is not in the visited or avoid lists.
 
 Reply with ONLY the chosen title, exactly as it appears in the list above. No quotes, no explanation."""
+        msg = claude.messages.create(
+            model=CLAUDE_MODEL,
+            max_tokens=200,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return msg.content[0].text.strip()
 
-    msg = claude.messages.create(
-        model=CLAUDE_MODEL,
-        max_tokens=200,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    choice = msg.content[0].text.strip()
+    choice = _ask(candidates)
     if choice not in candidates:
-        # TODO(vibe-code): retry once, then fall back to a simple heuristic.
-        raise ValueError(f"Claude returned {choice!r}, not in candidate list.")
+        # Retry once with the full unfiltered list (minus visited/forbidden)
+        full_candidates = [t for t in current.links if t not in set(visited) | forbidden]
+        choice = _ask(full_candidates)
+        if choice not in full_candidates:
+            # Fall back to first candidate
+            choice = candidates[0]
     return choice
 
 
@@ -264,24 +285,57 @@ def upsert_node(page: WikiPage, node_type: Optional[str] = None) -> int:
 
     If node_type is None and the row is new, classify_node_type() before insert.
     If the row already exists with a node_type, leave it alone.
-
-    TODO(vibe-code):
-      - First try to SELECT by wikipedia_url; if it exists, return id without re-classifying.
-      - If it doesn't exist, classify (one Claude call) and INSERT.
-      - Handle the race where two concurrent runs try to insert the same node.
     """
-    raise NotImplementedError
+    result = sb.table("nodes").select("id").eq("wikipedia_url", page.url).execute()
+    if result.data:
+        return result.data[0]["id"]
+
+    if node_type is None:
+        node_type = classify_node_type(page)
+
+    # upsert on wikipedia_url handles the race where two concurrent runs insert the same node
+    row = {
+        "wikipedia_url": page.url,
+        "title": page.title,
+        "node_type": node_type,
+        "intro_text": (page.intro_text or "")[:4000] or None,
+        "image_url": page.image_url,
+    }
+    insert_result = sb.table("nodes").upsert(row, on_conflict="wikipedia_url").execute()
+    return insert_result.data[0]["id"]
 
 
 def insert_path(start_node_id: int, end_node_id: int, hops: list[int], theme: str, completed: bool, group: str) -> int:
     """
-    Insert a path row and its edges in a transaction.
+    Insert a path row and its edges.
 
     `hops` is the ordered list of node ids from start to end inclusive.
     Convention: `paths.total_hops` is the number of EDGES, so total_hops = len(hops) - 1.
     Edges are derived from consecutive pairs in `hops` (zero-indexed `position_in_path`).
     """
-    raise NotImplementedError
+    path_result = sb.table("paths").insert({
+        "start_node_id": start_node_id,
+        "end_node_id": end_node_id,
+        "total_hops": len(hops) - 1,
+        "theme": theme or None,
+        "completed": completed,
+        "permutation_group": group,
+    }).execute()
+    path_id = path_result.data[0]["id"]
+
+    edges = [
+        {
+            "path_id": path_id,
+            "from_node_id": hops[i],
+            "to_node_id": hops[i + 1],
+            "position_in_path": i,
+        }
+        for i in range(len(hops) - 1)
+    ]
+    if edges:
+        sb.table("edges").insert(edges).execute()
+
+    return path_id
 
 
 # ---------------------------------------------------------------------------
@@ -339,9 +393,8 @@ def run_scenario(start: str, end: str, permutations: int = DEFAULT_PERMUTATIONS,
             path.theme = summarize_theme(path.hops)
         results.append(path)
 
-        # TODO(vibe-code): persist via upsert_node + insert_path.
-        # node_ids = [upsert_node(fetch_wiki_page(t)) for t in path.hops]
-        # insert_path(node_ids[0], node_ids[-1], node_ids, path.theme or "", path.completed, group)
+        node_ids = [upsert_node(fetch_wiki_page(t)) for t in path.hops]
+        insert_path(node_ids[0], node_ids[-1], node_ids, path.theme or "", path.completed, group)
 
     return results
 
