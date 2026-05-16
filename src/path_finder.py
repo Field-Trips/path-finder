@@ -36,9 +36,33 @@ load_dotenv(override=True)
 # Config
 # ---------------------------------------------------------------------------
 
-ANTHROPIC_API_KEY = os.environ["ANTHROPIC_API_KEY"]
-SUPABASE_URL = os.environ["SUPABASE_URL"]
-SUPABASE_SERVICE_ROLE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
+def _require_env(key: str, hint: str = "") -> str:
+    val = os.environ.get(key, "").strip()
+    if not val:
+        lines = [
+            f"\n  ✗  Missing environment variable: {key}",
+            "     Add it to your .env file in ~/field-trips/path-finder/",
+        ]
+        if hint:
+            lines.append(f"     {hint}")
+        raise SystemExit("\n".join(lines) + "\n")
+    # Warn about look-alike Unicode characters (e.g. Cyrillic е instead of Latin e)
+    try:
+        val.encode("ascii")
+    except UnicodeEncodeError:
+        raise SystemExit(
+            f"\n  ✗  {key} contains a non-ASCII character.\n"
+            "     This usually means your Mac's autocorrect replaced a letter\n"
+            "     when you pasted the key (e.g. Cyrillic 'е' instead of Latin 'e').\n"
+            "     Open .env, delete and re-paste the value with autocorrect off.\n"
+        )
+    return val
+
+ANTHROPIC_API_KEY = _require_env("ANTHROPIC_API_KEY", "It should start with sk-ant-")
+SUPABASE_URL      = _require_env("SUPABASE_URL",      "It should look like https://xxxx.supabase.co")
+SUPABASE_SERVICE_ROLE_KEY = _require_env(
+    "SUPABASE_SERVICE_ROLE_KEY", "It should start with eyJ — get it from Supabase → Project Settings → API"
+)
 
 MAX_HOPS = int(os.environ.get("MAX_HOPS", "10"))
 DEFAULT_PERMUTATIONS = int(os.environ.get("DEFAULT_PERMUTATIONS", "3"))
