@@ -79,33 +79,58 @@ class Path:
 # Wikipedia (MediaWiki API)
 # ---------------------------------------------------------------------------
 
+class DisambiguationError(ValueError):
+    """Raised when a Wikipedia title resolves to a disambiguation page."""
+    def __init__(self, title: str, options: list[str]):
+        self.title = title
+        self.options = options
+        opts = "\n".join(f"  • {o}" for o in options[:8])
+        super().__init__(
+            f"{title!r} is a disambiguation page. "
+            f"Go to Wikipedia, find the exact article you want, and paste its URL.\n"
+            f"Some options:\n{opts}"
+        )
+
+
 def normalize_title(title: str) -> str:
     """'monhegan island' -> 'Monhegan Island'. Wikipedia titles are case-sensitive after the first char."""
     return title.strip().replace("_", " ")
+
+
+def title_from_url(url: str) -> str:
+    """Extract article title from a Wikipedia URL, e.g. https://en.wikipedia.org/wiki/Monhegan_Island"""
+    from urllib.parse import urlparse, unquote
+    path = urlparse(url).path
+    if "/wiki/" not in path:
+        raise ValueError(f"Not a recognisable Wikipedia article URL: {url!r}")
+    raw = path.split("/wiki/", 1)[1].split("#")[0]  # drop anchors
+    return unquote(raw).replace("_", " ")
 
 
 def wiki_url(title: str) -> str:
     return f"https://en.wikipedia.org/wiki/{quote(normalize_title(title).replace(' ', '_'))}"
 
 
-def fetch_wiki_page(title: str) -> WikiPage:
+def fetch_wiki_page(title_or_url: str) -> WikiPage:
     """
-    Fetch a page's intro text and the list of internal wikilinks in one or two API calls.
+    Fetch a page's intro text, lead image, and internal wikilinks.
 
-    Uses:
-      - action=query&prop=extracts&exintro&explaintext   for the lead paragraph
-      - action=query&prop=links&pllimit=max              for outgoing internal links
-
-    Wikipedia paginates links via `continue`. Loop until exhausted.
+    Accepts either a plain title ('Monhegan Island') or a full Wikipedia URL.
+    Raises DisambiguationError if the page is a disambiguation page.
+    Raises ValueError if the page is not found.
     """
-    title = normalize_title(title)
+    if title_or_url.startswith("http"):
+        title = title_from_url(title_or_url)
+    else:
+        title = normalize_title(title_or_url)
+
     headers = {"User-Agent": WIKI_USER_AGENT}
 
-    # 1) Intro extract + lead image (combined into one request)
+    # 1) Intro extract + lead image + pageprops (to detect disambiguation)
     extract_params = {
         "action": "query",
         "format": "json",
-        "prop": "extracts|pageimages",
+        "prop": "extracts|pageimages|pageprops",
         "exintro": 1,
         "explaintext": 1,
         "piprop": "original",
@@ -117,10 +142,27 @@ def fetch_wiki_page(title: str) -> WikiPage:
     pages = r.json().get("query", {}).get("pages", {})
     page = next(iter(pages.values()), {}) if pages else {}
     if "missing" in page:
-        raise ValueError(f"Wikipedia page not found: {title!r}")
+        raise ValueError(
+            f"Wikipedia page not found: {title!r}\n"
+            f"Tip: go to Wikipedia, find the article, and paste the URL instead of the title."
+        )
     resolved_title = page.get("title", title)
     intro = page.get("extract", "") or ""
     image_url: Optional[str] = (page.get("original") or {}).get("source")
+
+    # Disambiguation check
+    if "disambiguation" in (page.get("pageprops") or {}):
+        # Fetch the links on the disambiguation page to show as options
+        opts_r = requests.get(WIKI_API, params={
+            "action": "query", "format": "json",
+            "prop": "links", "pllimit": "20", "plnamespace": 0,
+            "redirects": 1, "titles": resolved_title,
+        }, headers=headers, timeout=15)
+        opts_r.raise_for_status()
+        opts_pages = opts_r.json().get("query", {}).get("pages", {})
+        opts_page = next(iter(opts_pages.values()), {})
+        options = [l["title"] for l in (opts_page.get("links") or [])]
+        raise DisambiguationError(resolved_title, options)
 
     # 2) Internal links (paginated)
     links: list[str] = []
@@ -279,30 +321,51 @@ sb: Client = create_client(
 )
 
 
-def upsert_node(page: WikiPage, node_type: Optional[str] = None) -> int:
+def upsert_node(
+    page: WikiPage,
+    node_type: Optional[str] = None,
+    is_monhegan_object: bool = False,
+    located_in_id: Optional[int] = None,
+) -> int:
     """
     Upsert a node by wikipedia_url. Returns the node id.
 
     If node_type is None and the row is new, classify_node_type() before insert.
-    If the row already exists with a node_type, leave it alone.
+    If the row already exists, we still update is_monhegan_object and located_in
+    if new information is being provided (never downgrade an existing True flag).
     """
-    result = sb.table("nodes").select("id").eq("wikipedia_url", page.url).execute()
+    result = sb.table("nodes").select("id,is_monhegan_object,located_in").eq("wikipedia_url", page.url).execute()
     if result.data:
-        return result.data[0]["id"]
+        existing = result.data[0]
+        updates: dict = {}
+        if is_monhegan_object and not existing.get("is_monhegan_object"):
+            updates["is_monhegan_object"] = True
+        if located_in_id and not existing.get("located_in"):
+            updates["located_in"] = located_in_id
+        if updates:
+            sb.table("nodes").update(updates).eq("id", existing["id"]).execute()
+        return existing["id"]
 
     if node_type is None:
         node_type = classify_node_type(page)
 
-    # upsert on wikipedia_url handles the race where two concurrent runs insert the same node
     row = {
         "wikipedia_url": page.url,
         "title": page.title,
         "node_type": node_type,
         "intro_text": (page.intro_text or "")[:4000] or None,
         "image_url": page.image_url,
+        "is_monhegan_object": is_monhegan_object,
+        "located_in": located_in_id,
     }
     insert_result = sb.table("nodes").upsert(row, on_conflict="wikipedia_url").execute()
     return insert_result.data[0]["id"]
+
+
+def resolve_located_in(title_or_url: str) -> int:
+    """Get or create a node for a location (e.g. 'Monhegan Island'). Returns its id."""
+    page = fetch_wiki_page(title_or_url)
+    return upsert_node(page)
 
 
 def insert_path(start_node_id: int, end_node_id: int, hops: list[int], theme: str, completed: bool, group: str) -> int:
@@ -377,23 +440,49 @@ def find_path(start: str, end: str, forbidden: set[str], max_hops: int = MAX_HOP
     return Path(start_title=start, end_title=end, hops=visited, completed=False)
 
 
-def run_scenario(start: str, end: str, permutations: int = DEFAULT_PERMUTATIONS, max_hops: int = MAX_HOPS) -> list[Path]:
+def run_scenario(
+    start: str,
+    end: str,
+    permutations: int = DEFAULT_PERMUTATIONS,
+    max_hops: int = MAX_HOPS,
+    start_is_monhegan_object: bool = False,
+    start_located_in: Optional[str] = None,
+) -> list[Path]:
     """
-    Produce `permutations` distinct paths from start → end. After each successful
-    path, add its intermediates to `forbidden` so the next run takes a different route.
+    Produce `permutations` distinct paths from start → end.
+
+    start_is_monhegan_object: marks the start node with is_monhegan_object=True in Supabase.
+    start_located_in: title or URL of a place the start node belongs to (sets located_in FK).
     """
     forbidden: set[str] = set()
     results: list[Path] = []
     group = f"{normalize_title(start)}__{normalize_title(end)}"
 
+    located_in_id: Optional[int] = None
+    if start_located_in:
+        print(f"  Resolving location: {start_located_in!r} …")
+        located_in_id = resolve_located_in(start_located_in)
+
     for i in range(permutations):
         path = find_path(start, end, forbidden=forbidden, max_hops=max_hops)
         if path.completed:
-            forbidden.update(path.hops[1:-1])  # everything except start & end
+            forbidden.update(path.hops[1:-1])
             path.theme = summarize_theme(path.hops)
         results.append(path)
 
-        node_ids = [upsert_node(fetch_wiki_page(t)) for t in path.hops]
+        node_ids: list[int] = []
+        for idx, title in enumerate(path.hops):
+            page = fetch_wiki_page(title)
+            if idx == 0:
+                nid = upsert_node(
+                    page,
+                    is_monhegan_object=start_is_monhegan_object,
+                    located_in_id=located_in_id,
+                )
+            else:
+                nid = upsert_node(page)
+            node_ids.append(nid)
+
         insert_path(node_ids[0], node_ids[-1], node_ids, path.theme or "", path.completed, group)
 
     return results
@@ -409,13 +498,24 @@ def cli():
 
 
 @cli.command()
-@click.option("--start", required=True, help="Wikipedia page title (start).")
-@click.option("--end", required=True, help="Wikipedia page title (end).")
+@click.option("--start", required=True, help="Wikipedia page title or URL (start).")
+@click.option("--end", required=True, help="Wikipedia page title or URL (end).")
 @click.option("--permutations", default=DEFAULT_PERMUTATIONS, type=int)
 @click.option("--max-hops", default=MAX_HOPS, type=int)
-def one(start: str, end: str, permutations: int, max_hops: int):
+@click.option("--is-monhegan-object", is_flag=True, default=False,
+              help="Tag the start node as a Monhegan object in the database.")
+@click.option("--located-in", default=None,
+              help="Title or Wikipedia URL of the place the start article belongs to (sets located_in FK).")
+def one(start: str, end: str, permutations: int, max_hops: int,
+        is_monhegan_object: bool, located_in: Optional[str]):
     """Run a single (start, end) scenario."""
-    paths = run_scenario(start, end, permutations=permutations, max_hops=max_hops)
+    paths = run_scenario(
+        start, end,
+        permutations=permutations,
+        max_hops=max_hops,
+        start_is_monhegan_object=is_monhegan_object,
+        start_located_in=located_in,
+    )
     for i, p in enumerate(paths, 1):
         status = "✓" if p.completed else "× (hop cap)"
         print(f"\n[{i}] {status}  {p.theme or ''}")
