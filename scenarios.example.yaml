@@ -1,0 +1,29 @@
+# Seed scenarios for the path-finder.
+# Each scenario produces `permutations` distinct paths from start → end.
+#
+# `start` and `end` are Wikipedia page titles (exactly as they appear in the URL,
+# but with spaces instead of underscores — the script normalizes both).
+#
+# Example queue, anchored on Monhegan and Monhegan objects.
+
+defaults:
+  permutations: 3
+  max_hops: 10
+
+scenarios:
+  - start: Monhegan
+    end: Conservation movement
+  - start: Monhegan
+    end: American Romanticism
+  - start: Monhegan
+    end: Wabanaki Confederacy
+
+  # Monhegan-object starts (assumes you've seeded the object nodes first)
+  - start: Monhegan Light
+    end: Maritime history of the United States
+  - start: Manana Island
+    end: Norse colonization of North America
+  - start: Monhegan Museum of Art & History
+    end: American Impressionism
+  - start: Black Head (Monhegan)
+    end: Geology of Maine
