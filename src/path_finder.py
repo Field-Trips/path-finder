@@ -451,7 +451,13 @@ def find_path(start: str, end: str, forbidden: set[str], max_hops: int = MAX_HOP
             return Path(start_title=start, end_title=end, hops=visited, completed=True)
 
         visited.append(next_title)
-        current = fetch_wiki_page(next_title)
+        try:
+            current = fetch_wiki_page(next_title)
+        except (ValueError, DisambiguationError):
+            # Claude picked a title that doesn't exist or is a disambiguation page.
+            # Skip it and try again from the same position next hop.
+            visited.pop()
+            forbidden.add(next_title)
 
     return Path(start_title=start, end_title=end, hops=visited, completed=False)
 
