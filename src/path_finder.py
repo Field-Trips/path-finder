@@ -233,14 +233,28 @@ def fetch_wiki_page(title_or_url: str) -> WikiPage:
 claude = Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
+def _prefix(title: str, n: int = 2) -> str:
+    """Return the first n words of a title, lowercased."""
+    return " ".join(title.lower().split()[:n])
+
+
 def _shortlist_links(links: list[str], visited: set[str], forbidden: set[str], limit: int = 80) -> list[str]:
     """Filter Wikipedia links to a manageable set before sending to Claude."""
     import re
     date_re = re.compile(r"^\d{4}s?$|^\d{1,2} \w+$|^\w+ \d{4}$|^List of |^Index of |^Outline of ")
     skip = visited | forbidden
+
+    # Build 2-word prefixes from all visited titles (e.g. "anarchism in" from
+    # "Anarchism in New Zealand"). Candidates that share a prefix are structurally
+    # the same kind of article and unlikely to make progress — skip them.
+    visited_prefixes = {_prefix(t) for t in visited if len(t.split()) >= 2}
+
     filtered = [
         t for t in links
-        if t not in skip and not date_re.match(t) and len(t) > 2
+        if t not in skip
+        and not date_re.match(t)
+        and len(t) > 2
+        and _prefix(t) not in visited_prefixes
     ]
     return filtered[:limit]
 
