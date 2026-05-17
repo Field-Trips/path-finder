@@ -682,9 +682,12 @@ def run_scenario(
             page = fetch_wiki_page(title)
             node_ids.append(upsert_node(page))
 
+        # Always record the user's INTENDED destination, not where the search
+        # ended up. Failed (hop-capped) paths previously stored the last-visited
+        # node as concept_node_id, which made retry lookups miss them entirely.
         insert_path(
-            place_node_id=node_ids[0],
-            concept_node_id=node_ids[-1],
+            place_node_id=place_node_id,
+            concept_node_id=concept_node_id,
             hops=node_ids,
             theme=path.theme or "",
             completed=path.completed,
