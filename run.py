@@ -144,6 +144,11 @@ def fetch_anchors(place_url: str = "") -> list[dict]:
     return _query_json(args)
 
 
+def fetch_concepts() -> list[dict]:
+    """Distinct concepts that have at least one completed path. Alphabetized."""
+    return _query_json(["concepts"])
+
+
 # ── Pickers ─────────────────────────────────────────────────────────────────
 
 def pick_place() -> tuple[str, str]:
@@ -279,12 +284,30 @@ def action_list_anchors():
     print()
 
 
+def action_view_summary():
+    """Print a snapshot of the collection: places, anchors, concepts, paths."""
+    subprocess.run([_venv_python(), "-m", "src.path_finder", "summary"], cwd=SCRIPT_DIR)
+    try:
+        input(f"  {dim('Press Enter to return to the menu.')}")
+    except (KeyboardInterrupt, EOFError):
+        pass
+    print()
+
+
 def ask_concepts() -> list[tuple[str, str]]:
     """Collect 1-5 concepts as a comma-separated list. Each is validated against Wikipedia.
     Tip: paste URLs to avoid commas-in-titles issues. Returns list of (title, url) tuples."""
     print(f"\n  {bold('Concepts')}")
     print(f"  {dim('Comma-separated. Max 5. Paste Wikipedia URLs for precision.')}")
-    print(f"  {dim('Example: https://en.wikipedia.org/wiki/Marxism, https://en.wikipedia.org/wiki/Anthroposophy')}\n")
+    print(f"  {dim('Example: https://en.wikipedia.org/wiki/Marxism, https://en.wikipedia.org/wiki/Anthroposophy')}")
+
+    existing = fetch_concepts()
+    if existing:
+        print()
+        print(f"  {dim('Concepts already in the collection (so you can reuse or avoid duplicates):')}")
+        for c in existing:
+            print(f"    {dim('·')} {c.get('title')}")
+    print()
 
     raw = ask("Concepts", "")
     if not raw:
@@ -502,97 +525,125 @@ def action_create_indirect_path():
                "--permutations",  str(perms)]
         subprocess.run(cmd, cwd=SCRIPT_DIR)
     print("  " + "─" * 50)
-    print(f"\n  {green('Done.')}\n")
+    print(f"\n  {green('Run complete.')}\n")
+
+    # Same post-run resolution flow as the direct path
+    offer_retry_failed(primary_url, concepts, perms)
 
 
 def offer_retry_failed(anchor_url: str, concepts: list[tuple[str, str]], perms: int) -> None:
-    """Loop: keep listing concepts with zero completed paths and let the user
-    retry with a higher cap. With the new architecture, incomplete paths are
-    never saved to the DB — so 'failed' simply means 'no completed path yet'.
-    Continues until the user skips or every concept has at least one
-    completed path."""
-    current_pool: list[tuple[str, str]] = list(concepts)
-    last_cap = 15  # default stage-2 cap; ratchets up on each loop
+    """After a run, show a pass/fail summary and let the user resolve each
+    failure individually — choosing per-concept whether to add hops, branch
+    through another anchor, or switch to a different primary anchor. Loops
+    after each fix until everything is resolved or the user dismisses.
+
+    A concept counts as "passed" if ANY completed path exists for it,
+    regardless of which anchor was used (so resolving Marxism via Rockwell
+    Kent after failing on Fairy houses still marks Marxism done)."""
+    place_url = _place_for_anchor(anchor_url)
+    place_title = _place_title_for_url(place_url)
+    last_cap = 15  # ratchets up on each "add hops" choice
 
     while True:
+        passed: list[tuple[str, str]] = []
         failed: list[tuple[str, str]] = []
-        for title, url in current_pool:
-            if _concept_completed_count(anchor_url, url) == 0:
+        for title, url in concepts:
+            if _concept_completed_count_any_anchor(url) > 0:
+                passed.append((title, url))
+            else:
                 failed.append((title, url))
 
+        print(f"\n  {bold('Summary')}  {dim(f'({len(passed)} ✓ · {len(failed)} ×)')}")
+        if passed:
+            print(f"    {green('✓ Completed:')}")
+            for t, _ in passed:
+                print(f"      {green('·')} {t}")
+        if failed:
+            print(f"    {yellow('× Not yet completed:')}")
+            for t, _ in failed:
+                print(f"      {yellow('·')} {t}")
+
         if not failed:
+            print(f"\n  {green('All concepts have at least one completed path.')}\n")
             return
 
-        print(f"\n  {yellow('▲ Some concepts have no completed path yet:')}")
+        # Pick which fail to resolve next
+        print(f"\n  {bold('Pick a fail to resolve:')}")
         for i, (t, _) in enumerate(failed, 1):
             print(f"    {cyan(str(i))}  {t}")
-        print(f"    {cyan('a')}  Retry all with more hops")
-        print(f"    {cyan('b')}  Try an indirect path  {dim('(branch through another anchor — pick existing or add new inline)')}")
-        print(f"    {cyan('n')}  Skip retry")
+        print(f"    {cyan('s')}  Stop — dismiss remaining fails")
 
-        choice = ask("Choice", "n").lower()
-        if choice in ("n", "no", ""):
+        choice = ask("Choice", "s").lower()
+        if choice in ("s", "stop", "skip", ""):
             return
-
-        if choice == "b":
-            # Branch sub-flow: pick which failed concept to branch, then which anchor to branch through
-            if len(failed) == 1:
-                target = failed[0]
-            else:
-                print(f"\n  {bold('Which concept do you want to branch?')}")
-                for i, (t, _) in enumerate(failed, 1):
-                    print(f"    {cyan(str(i))}  {t}")
-                sub = ask("Choice", "1").lower()
-                try:
-                    idx = int(sub) - 1
-                    if 0 <= idx < len(failed):
-                        target = failed[idx]
-                    else:
-                        print(f"  {yellow('Invalid choice.')}\n")
-                        continue
-                except ValueError:
-                    print(f"  {yellow('Invalid choice.')}\n")
-                    continue
-
-            target_title, target_url = target
-            run_branch_for_concept(anchor_url, target_title, target_url, perms)
-            current_pool = [target]  # loop will re-check this concept next iteration
+        try:
+            idx = int(choice) - 1
+            if not (0 <= idx < len(failed)):
+                print(f"  {yellow('Invalid choice.')}\n")
+                continue
+        except ValueError:
+            print(f"  {yellow('Invalid choice.')}\n")
             continue
 
-        if choice == "a":
-            retry_list = list(failed)
-        else:
-            try:
-                idx = int(choice) - 1
-                if 0 <= idx < len(failed):
-                    retry_list = [failed[idx]]
-                else:
-                    print(f"  {yellow('Invalid choice — skipping retry.')}\n")
-                    return
-            except ValueError:
-                print(f"  {yellow('Invalid choice — skipping retry.')}\n")
-                return
+        target_title, target_url = failed[idx]
 
-        # Default next cap is a bit higher than the last attempt, max 50.
-        default_cap = min(max(last_cap + 10, 25), 50)
-        new_cap = ask_int("New hop cap for stage 2 (anchor → concept)", default=default_cap, lo=15, hi=50)
-        last_cap = new_cap
-        print()
+        # Per-concept fix menu
+        print(f"\n  {bold('How to resolve')} {bold(target_title)}{bold('?')}")
+        print(f"    {cyan('h')}  Add more hops      {dim('(retry the direct path with a higher cap)')}")
+        print(f"    {cyan('b')}  Try an indirect path  {dim('(branch through another anchor on this place)')}")
+        print(f"    {cyan('u')}  Use a different anchor  {dim('(retry direct path from a different primary anchor)')}")
+        print(f"    {cyan('s')}  Skip this one")
 
-        for title, url in retry_list:
-            print(f"\n  {dim('Retrying:')} {bold(title)} {dim(f'(stage 2 cap = {new_cap})')}")
+        fix = ask("Choice", "h").lower()
+
+        if fix in ("s", "skip", ""):
+            # Mark as "addressed" by removing from concepts — but actually we should
+            # only remove if user explicitly skips. Otherwise loop checks status again.
+            # To prevent infinite loops on skip-and-revisit, drop from concepts.
+            concepts = [c for c in concepts if c[1] != target_url]
+            continue
+
+        if fix == "h":
+            default_cap = min(max(last_cap + 10, 25), 50)
+            new_cap = ask_int("New hop cap for stage 2", default=default_cap, lo=15, hi=50)
+            last_cap = new_cap
+            print(f"\n  {dim('Retrying:')} {bold(target_title)} {dim(f'(stage 2 cap = {new_cap})')}")
             cmd = [_venv_python(), "-m", "src.path_finder", "one",
-                   "--place", _place_for_anchor(anchor_url),
+                   "--place", place_url,
                    "--anchor", anchor_url,
-                   "--concept", url,
+                   "--concept", target_url,
                    "--permutations", str(perms),
                    "--stage2-hops", str(new_cap),
                    "--allow-duplicates"]
             subprocess.run(cmd, cwd=SCRIPT_DIR)
+            continue
 
-        # Loop: next pass only checks the retry list. If any still incomplete,
-        # we offer another round with an even bigger cap.
-        current_pool = retry_list
+        if fix == "b":
+            run_branch_for_concept(anchor_url, target_title, target_url, perms)
+            continue
+
+        if fix == "u":
+            print(f"\n  {dim('Pick a different anchor on')} {bold(place_title)}{dim(':')}")
+            new_anchor = pick_anchor(
+                place_url=place_url,
+                place_title=place_title,
+                exclude_url=anchor_url,
+                prompt_label="Pick the new primary anchor",
+            )
+            if not new_anchor:
+                continue
+            new_anchor_url = new_anchor["wikipedia_url"]
+            new_anchor_title = new_anchor["title"]
+            print(f"\n  {dim('Retrying:')} {bold(target_title)} {dim(f'from {new_anchor_title}')}")
+            cmd = [_venv_python(), "-m", "src.path_finder", "one",
+                   "--place", place_url,
+                   "--anchor", new_anchor_url,
+                   "--concept", target_url,
+                   "--permutations", str(perms)]
+            subprocess.run(cmd, cwd=SCRIPT_DIR)
+            continue
+
+        print(f"  {yellow('Unknown choice.')}\n")
 
 
 def run_branch_for_concept(anchor_url: str, concept_title: str, concept_url: str, perms: int) -> None:
@@ -676,6 +727,32 @@ def _place_title_for_url(place_url: str) -> str:
     return ""
 
 
+def _concept_completed_count_any_anchor(concept_url: str) -> int:
+    """Count completed paths for a concept across ALL anchors. Used for the
+    per-run summary: a concept counts as 'completed' if any anchor has reached
+    it, even if the originally-tried anchor failed."""
+    result = subprocess.run(
+        [_venv_python(), "-c", f"""
+import sys
+sys.path.insert(0, '.')
+from dotenv import load_dotenv; load_dotenv(override=True)
+from src.path_finder import sb
+concept_node = sb.table('nodes').select('id').eq('wikipedia_url', {concept_url!r}).execute()
+if not concept_node.data:
+    print('0'); sys.exit()
+paths = sb.table('paths').select('id').eq('concept_node_id', concept_node.data[0]['id']).eq('completed', True).execute()
+print(len(paths.data))
+"""], cwd=SCRIPT_DIR, capture_output=True, text=True,
+    )
+    out = (result.stdout or "").strip().splitlines()
+    if not out:
+        return 0
+    try:
+        return int(out[-1])
+    except Exception:
+        return 0
+
+
 def _concept_completed_count(anchor_url: str, concept_url: str) -> int:
     """Number of completed paths from this anchor → concept in the database.
     Since incomplete paths are no longer saved, this is just the count of rows
@@ -726,6 +803,7 @@ def main() -> None:
         print(f"    {cyan('2')}  Create new indirect path   {dim('(Place → Anchor → Branch → Concept)')}")
         print(f"    {cyan('3')}  Add an anchor              {dim('(pin a person/place/thing on a map)')}")
         print(f"    {cyan('4')}  List anchors")
+        print(f"    {cyan('5')}  View summary               {dim('(places, anchors, concepts, paths)')}")
         print(f"    {cyan('q')}  Quit")
         print()
 
@@ -738,6 +816,8 @@ def main() -> None:
             action_add_anchor()
         elif choice == "4":
             action_list_anchors()
+        elif choice == "5":
+            action_view_summary()
         elif choice in ("q", "quit", "exit"):
             print("  Bye.\n")
             return

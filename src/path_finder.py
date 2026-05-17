@@ -1109,6 +1109,129 @@ def batch_cmd(place: str, anchor: str, concepts: str, permutations: int, allow_d
         print(logs.get(c, "(no output)"))
 
 
+@cli.command("concepts")
+@click.option("--json", "json_output", is_flag=True, default=False)
+def concepts_cmd(json_output: bool):
+    """List distinct concepts (destinations) that have at least one completed path."""
+    rows = (
+        sb.table("paths").select("concept:nodes!paths_concept_node_id_fkey(id,title,wikipedia_url)")
+        .eq("completed", True).execute().data
+    )
+    seen = set()
+    unique = []
+    for r in rows:
+        c = r.get("concept") or {}
+        if c.get("id") and c["id"] not in seen:
+            seen.add(c["id"])
+            unique.append(c)
+    unique.sort(key=lambda c: (c.get("title") or "").lower())
+    if json_output:
+        print(json.dumps(unique))
+        return
+    if not unique:
+        print("No concepts with completed paths yet.")
+        return
+    for c in unique:
+        print(f"  · {c['title']}")
+
+
+@cli.command("summary")
+@click.option("--json", "json_output", is_flag=True, default=False)
+def summary_cmd(json_output: bool):
+    """Show current state of the collection: places, anchors, concepts, paths."""
+    places = sb.table("anchors").select(
+        "place:nodes!anchors_place_node_id_fkey(id,title,wikipedia_url)"
+    ).execute().data
+    place_set: dict[int, dict] = {}
+    for a in places:
+        p = a.get("place") or {}
+        if p.get("id"):
+            place_set[p["id"]] = p
+    place_list = sorted(place_set.values(), key=lambda p: (p.get("title") or "").lower())
+
+    anchors_raw = sb.table("anchors").select(
+        "id,rationale,"
+        "node:nodes!anchors_node_id_fkey(id,title,node_type),"
+        "place:nodes!anchors_place_node_id_fkey(id,title)"
+    ).execute().data
+    anchors_by_place: dict[int, list[dict]] = {}
+    for a in anchors_raw:
+        pid = (a.get("place") or {}).get("id")
+        if pid is not None:
+            anchors_by_place.setdefault(pid, []).append(a)
+    for v in anchors_by_place.values():
+        v.sort(key=lambda r: ((r.get("node") or {}).get("title") or "").lower())
+
+    paths = sb.table("paths").select(
+        "id,total_hops,branch_anchor_id,"
+        "concept:nodes!paths_concept_node_id_fkey(id,title),"
+        "anchor:anchors!paths_anchor_id_fkey(id,node:nodes!anchors_node_id_fkey(title))"
+    ).eq("completed", True).execute().data
+
+    concepts_set: dict[int, str] = {}
+    for p in paths:
+        c = p.get("concept") or {}
+        if c.get("id"):
+            concepts_set[c["id"]] = c.get("title") or "?"
+    concept_titles = sorted(concepts_set.values(), key=str.lower)
+
+    # Group paths by (anchor, concept) pair to show counts
+    pair_counts: dict[tuple[str, str], int] = {}
+    pair_branched: dict[tuple[str, str], int] = {}
+    for p in paths:
+        anchor_title = ((p.get("anchor") or {}).get("node") or {}).get("title") or "?"
+        concept_title = (p.get("concept") or {}).get("title") or "?"
+        key = (anchor_title, concept_title)
+        pair_counts[key] = pair_counts.get(key, 0) + 1
+        if p.get("branch_anchor_id"):
+            pair_branched[key] = pair_branched.get(key, 0) + 1
+    pair_list = sorted(pair_counts.items(), key=lambda kv: (kv[0][0].lower(), kv[0][1].lower()))
+
+    if json_output:
+        print(json.dumps({
+            "places": place_list,
+            "anchors_by_place": {str(k): v for k, v in anchors_by_place.items()},
+            "concepts": concept_titles,
+            "paths_total": len(paths),
+            "pairs": [{"anchor": a, "concept": c, "count": n, "branched": pair_branched.get((a, c), 0)} for (a, c), n in pair_list],
+        }))
+        return
+
+    # Plain text rendering
+    print()
+    print(f"Field Trips — current state")
+    print()
+    print(f"Places ({len(place_list)}):")
+    for p in place_list:
+        print(f"  · {p['title']}")
+    print()
+
+    total_anchors = sum(len(v) for v in anchors_by_place.values())
+    print(f"Anchors ({total_anchors}):")
+    for place in place_list:
+        rows = anchors_by_place.get(place["id"], [])
+        if not rows:
+            continue
+        print(f"  on {place['title']}:")
+        for a in rows:
+            node = a.get("node") or {}
+            print(f"    · {node.get('title')}  ({node.get('node_type') or '?'})")
+    print()
+
+    print(f"Concepts ({len(concept_titles)}):")
+    for t in concept_titles:
+        print(f"  · {t}")
+    print()
+
+    print(f"Paths ({len(paths)} completed across {len(pair_list)} unique anchor → concept pairs):")
+    for (a, c), n in pair_list:
+        branched = pair_branched.get((a, c), 0)
+        suffix = f"  ({n})" if n > 1 else ""
+        bsuffix = f"  {n - branched} direct + {branched} branched" if branched else ""
+        print(f"  · {a}  →  {c}{suffix}{bsuffix}")
+    print()
+
+
 @cli.command("places")
 @click.option("--json", "json_output", is_flag=True, default=False)
 def places_cmd(json_output: bool):
