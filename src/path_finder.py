@@ -714,6 +714,48 @@ def anchor_remove(anchor_id: int):
     print(f"✓ Anchor #{anchor_id} removed.")
 
 
+@cli.command("batch")
+@click.option("--place",   required=True, help="Wikipedia title or URL of the Place.")
+@click.option("--anchor",  required=True, help="Wikipedia title or URL of the Anchor.")
+@click.option("--concepts", required=True, help="Comma-separated list of concept titles/URLs (cap at 5).")
+@click.option("--permutations", default=1, type=int)
+def batch_cmd(place: str, anchor: str, concepts: str, permutations: int):
+    """Run several concepts in parallel from one anchor. Cap at 5 to stay under rate limits."""
+    import subprocess
+    import threading
+    items = [c.strip() for c in concepts.split(",") if c.strip()]
+    if len(items) > 5:
+        print(f"⚠  {len(items)} concepts — capping at 5 to stay under rate limits.")
+        items = items[:5]
+    print(f"\nRunning {len(items)} paths in parallel from {anchor}:\n")
+    for c in items:
+        print(f"  • {c}")
+    print()
+
+    processes = []
+    logs: dict[str, str] = {}
+
+    def _run(concept: str):
+        proc = subprocess.run(
+            [sys.executable, "-m", "src.path_finder", "one",
+             "--place", place, "--anchor", anchor, "--concept", concept,
+             "--permutations", str(permutations)],
+            capture_output=True, text=True,
+        )
+        logs[concept] = (proc.stdout or "") + (proc.stderr or "")
+
+    import sys
+    threads = [threading.Thread(target=_run, args=(c,)) for c in items]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    for c in items:
+        print(f"\n─── {c} ──────────────────────────────────────")
+        print(logs.get(c, "(no output)"))
+
+
 @cli.command("places")
 @click.option("--json", "json_output", is_flag=True, default=False)
 def places_cmd(json_output: bool):
