@@ -119,18 +119,102 @@ except ValueError as e:
         print(f"     {red('Not found:')} {data.get('msg', 'unknown error')}\n")
 
 
-# ── actions ─────────────────────────────────────────────────────────────────
+# ── Supabase queries (used by pickers) ──────────────────────────────────────
 
-def action_add_anchor():
-    print(f"\n  {bold('Add anchor')}")
-    print(f"  {dim('An anchor is a curated person/place/thing pinned on the map of a place.')}\n")
+def _query_json(args: list[str]) -> list:
+    """Run a path_finder CLI command that supports --json and return parsed JSON."""
+    result = subprocess.run(
+        [_venv_python(), "-m", "src.path_finder", *args, "--json"],
+        cwd=SCRIPT_DIR, capture_output=True, text=True,
+    )
+    try:
+        return json.loads(result.stdout.strip().splitlines()[-1])
+    except Exception:
+        return []
 
-    place_title, place_url = resolve_article("Place")
-    anchor_title, anchor_url = resolve_article("Anchor (person/place/thing)")
 
-    print(f"  {dim('Rationale (optional) — why this anchor belongs to this place. Enter to skip.')}")
+def fetch_places() -> list[dict]:
+    return _query_json(["places"])
+
+
+def fetch_anchors(place_url: str = "") -> list[dict]:
+    args = ["anchor", "list"]
+    if place_url:
+        args += ["--place", place_url]
+    return _query_json(args)
+
+
+# ── Pickers ─────────────────────────────────────────────────────────────────
+
+def pick_place() -> tuple[str, str]:
+    """Show existing places; user picks one or adds new. Returns (title, url)."""
+    places = fetch_places()
+    if not places:
+        print(f"  {dim('No places saved yet — adding a new one.')}")
+        return resolve_article("Place — Wikipedia title or URL (the map this anchor lives on, e.g. 'Monhegan Island')")
+
+    print(f"\n  {bold('Pick a place:')}")
+    for i, p in enumerate(places, 1):
+        print(f"    {cyan(str(i))}  {p['title']}")
+    print(f"    {cyan('n')}  + Add new place")
+
+    while True:
+        choice = ask("Choice", "1").lower()
+        if choice == "n":
+            return resolve_article("Place — Wikipedia title or URL")
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(places):
+                p = places[idx]
+                print(f"     {green('✓')} {bold(p['title'])}\n")
+                return p["title"], p["wikipedia_url"]
+        except ValueError:
+            pass
+        print(f"     {yellow('Please pick a number or n.')}")
+
+
+def pick_anchor() -> dict:
+    """Show existing anchors; user picks one or adds new. Returns full anchor record."""
+    anchors = fetch_anchors()
+    if not anchors:
+        print(f"  {dim('No anchors saved yet — adding a new one.')}")
+        return inline_add_anchor()
+
+    print(f"\n  {bold('Pick an anchor:')}")
+    for i, a in enumerate(anchors, 1):
+        place = a.get("place_title") or "?"
+        node_type = a.get("node_type") or "?"
+        print(f"    {cyan(str(i))}  {a['title']}  {dim(f'({node_type} · on {place})')}")
+    print(f"    {cyan('n')}  + Add new anchor")
+
+    while True:
+        choice = ask("Choice", "1").lower()
+        if choice == "n":
+            return inline_add_anchor()
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(anchors):
+                a = anchors[idx]
+                print(f"     {green('✓')} {bold(a['title'])} on {bold(a.get('place_title') or '?')}\n")
+                return a
+        except ValueError:
+            pass
+        print(f"     {yellow('Please pick a number or n.')}")
+
+
+def inline_add_anchor() -> dict:
+    """Add a new anchor and return its record so it can flow into the next step."""
+    print(f"\n  {bold('Add a new anchor')}")
+    print(f"  {dim('An anchor is a person/place/thing pinned on the map of a place.')}\n")
+
+    place_title, place_url = pick_place()
+    anchor_title, anchor_url = resolve_article(
+        "Anchor — Wikipedia title or URL (the person/place/thing being pinned, e.g. 'Lobster trap', 'Rockwell Kent')"
+    )
+
+    print(f"  {dim('Rationale (optional) — why this anchor belongs to this place. Press Enter to skip.')}")
     rationale = ask("Rationale", "")
-    print(f"  {dim('Custom image URL (optional) — overrides Wikipedia image. Enter to skip.')}")
+    print(f"  {dim('Custom image URL (optional) — overrides Wikipedia image. Press Enter to skip.')}")
     image = ask("Image URL", "")
 
     cmd = [_venv_python(), "-m", "src.path_finder", "anchor", "add",
@@ -143,27 +227,81 @@ def action_add_anchor():
     print()
     result = subprocess.run(cmd, cwd=SCRIPT_DIR)
     print()
-    return result.returncode == 0
+
+    if result.returncode != 0:
+        print(f"  {red('Failed to add anchor.')}")
+        return {}
+
+    # Re-fetch the saved row so callers get fresh data
+    for a in fetch_anchors(place_url):
+        if a["wikipedia_url"] == anchor_url:
+            return a
+    return {
+        "title": anchor_title, "wikipedia_url": anchor_url,
+        "place_title": place_title, "place_wikipedia_url": place_url,
+    }
+
+
+# ── actions ─────────────────────────────────────────────────────────────────
+
+def action_add_anchor():
+    inline_add_anchor()
 
 
 def action_list_anchors():
     print(f"\n  {bold('Anchors')}\n")
-    place = ask("Filter by place (Wikipedia title/URL, or press Enter for all)", "")
+    place_title, place_url = pick_place_or_all()
     cmd = [_venv_python(), "-m", "src.path_finder", "anchor", "list"]
-    if place:
-        cmd += ["--place", place]
+    if place_url:
+        cmd += ["--place", place_url]
     print()
     subprocess.run(cmd, cwd=SCRIPT_DIR)
     print()
 
 
+def pick_place_or_all() -> tuple[str, str]:
+    """Like pick_place but also offers 'All places'. Returns ('', '') for all."""
+    places = fetch_places()
+    if not places:
+        return "", ""
+    print(f"\n  {bold('Filter by place:')}")
+    print(f"    {cyan('a')}  All places")
+    for i, p in enumerate(places, 1):
+        print(f"    {cyan(str(i))}  {p['title']}")
+    while True:
+        choice = ask("Choice", "a").lower()
+        if choice == "a":
+            return "", ""
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(places):
+                p = places[idx]
+                return p["title"], p["wikipedia_url"]
+        except ValueError:
+            pass
+        print(f"     {yellow('Please pick a number or a.')}")
+
+
 def action_find_paths():
     print(f"\n  {bold('Find paths')}")
-    print(f"  {dim('Place → Anchor → Concept')}\n")
+    print(f"  {dim('Pick an anchor, then say what concept you want to connect it to.')}\n")
 
-    place_title,   place_url   = resolve_article("Place")
-    anchor_title,  anchor_url  = resolve_article("Anchor")
-    concept_title, concept_url = resolve_article("Concept (the destination idea/event)")
+    anchor = pick_anchor()
+    if not anchor:
+        return
+
+    anchor_title = anchor["title"]
+    anchor_url   = anchor["wikipedia_url"]
+    place_title  = anchor.get("place_title") or "?"
+    place_url    = anchor.get("place_wikipedia_url") or ""
+
+    if not place_url:
+        # Shouldn't happen, but guard anyway
+        place_title, place_url = pick_place()
+
+    concept_title, concept_url = resolve_article(
+        "Concept — Wikipedia title or URL (the destination idea/event, e.g. 'Conservation movement', 'Marxism')"
+    )
 
     print(f"  {bold('How many distinct paths?')}  {dim('1 = quick · 3 = standard · 5 = thorough')}")
     perms = ask_int("Permutations", default=1, lo=1, hi=10)
