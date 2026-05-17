@@ -1232,6 +1232,114 @@ def summary_cmd(json_output: bool):
     print()
 
 
+@cli.command("backfill-narratives")
+@click.option("--dry-run", is_flag=True, default=False, help="Show what would be backfilled without making changes.")
+@click.option("--limit", default=None, type=int, help="Process at most N paths.")
+@click.option("--rewrite", is_flag=True, default=False,
+              help="Regenerate themes + narratives even for paths that already have one (use after prompt changes).")
+def backfill_narratives_cmd(dry_run: bool, limit: Optional[int], rewrite: bool):
+    """
+    Generate themes and narratives for completed paths that don't have them yet.
+
+    For each path:
+      1. Reconstruct the ordered list of hop titles from the edges table.
+      2. Look up the branch anchor title if the path is branched.
+      3. Call summarize_theme() — the same function the main flow uses, so
+         themes/narratives backfilled here match those generated live.
+      4. Write the result back to the paths table.
+
+    Cost: ~$0.005 per path (one Sonnet API call). The rate-limit retry
+    wrapper handles 429s automatically.
+    """
+    query = sb.table("paths").select(
+        "id, completed, theme, narrative, anchor_id, branch_anchor_id"
+    ).eq("completed", True).order("id")
+    if not rewrite:
+        query = query.is_("narrative", "null")
+    paths = query.execute().data
+
+    if limit is not None:
+        paths = paths[:limit]
+
+    if not paths:
+        print("✓ Nothing to backfill — every completed path already has a narrative.")
+        return
+
+    action = "Regenerating" if rewrite else "Backfilling"
+    print(f"\n{action} {len(paths)} path(s).")
+    if dry_run:
+        for p in paths:
+            print(f"  Path #{p['id']}  (would " + ("rewrite" if rewrite else "fill") + ")")
+        print("\n(dry run — no changes made)")
+        return
+
+    for i, p in enumerate(paths, 1):
+        path_id = p["id"]
+        print(f"\n[{i}/{len(paths)}] Path #{path_id}")
+
+        # Pull the ordered edges and resolve titles for from + to nodes.
+        edges = (
+            sb.table("edges")
+            .select(
+                "position_in_path, from_node_id, to_node_id, "
+                "from_node:nodes!edges_from_node_id_fkey(title), "
+                "to_node:nodes!edges_to_node_id_fkey(title)"
+            )
+            .eq("path_id", path_id)
+            .order("position_in_path")
+            .execute()
+            .data
+        )
+        if not edges:
+            print("  ⚠  no edges found, skipping")
+            continue
+
+        hop_titles: list[str] = [(edges[0].get("from_node") or {}).get("title") or "?"]
+        for e in edges:
+            hop_titles.append((e.get("to_node") or {}).get("title") or "?")
+
+        # Trim middle for display
+        if len(hop_titles) <= 4:
+            preview = " → ".join(hop_titles)
+        else:
+            preview = f"{hop_titles[0]} → … ({len(hop_titles) - 2} hops) … → {hop_titles[-1]}"
+        print(f"  {preview}")
+
+        # Look up branch anchor title if branched
+        branch_via: Optional[str] = None
+        if p.get("branch_anchor_id"):
+            row = (
+                sb.table("anchors")
+                .select("node:nodes!anchors_node_id_fkey(title)")
+                .eq("id", p["branch_anchor_id"])
+                .execute()
+                .data
+            )
+            if row:
+                branch_via = (row[0].get("node") or {}).get("title")
+            if branch_via:
+                print(f"  {dim_text('branched via')} {branch_via}")
+
+        try:
+            theme, narrative = summarize_theme(hop_titles, branch_via=branch_via)
+        except Exception as exc:
+            print(f"  ✗ summarize_theme failed: {exc}")
+            continue
+
+        sb.table("paths").update({
+            "theme": theme,
+            "narrative": narrative,
+        }).eq("id", path_id).execute()
+
+        print(f"  ✓ {theme}")
+
+    print(f"\nDone. Backfilled {len(paths)} path(s).")
+
+
+def dim_text(s: str) -> str:
+    return f"\033[2m{s}\033[0m"
+
+
 @cli.command("places")
 @click.option("--json", "json_output", is_flag=True, default=False)
 def places_cmd(json_output: bool):
