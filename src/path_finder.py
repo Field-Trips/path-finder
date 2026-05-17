@@ -270,8 +270,7 @@ def _stems(title: str) -> tuple[str, str]:
     """
     Returns (first-2-words, last-2-words) of a title, lowercased.
     If the first word is a 4-digit year (e.g. '1933 Nobel Prize in Literature'),
-    that year is stripped before computing the prefix — so titles that differ
-    ONLY by year still get treated as the same structural pattern.
+    that year is stripped before computing the prefix.
     """
     words = title.lower().split()
     if words and len(words[0]) == 4 and words[0].isdigit():
@@ -282,16 +281,30 @@ def _stems(title: str) -> tuple[str, str]:
     return (" ".join(words[:2]), " ".join(words[-2:]))
 
 
+def _key_word(title: str) -> str:
+    """The last word of a title, lowercased and lightly singularized.
+    Used to detect 'category clusters' (e.g. multiple titles ending in 'shooting',
+    'killings', 'murders', 'attacks')."""
+    words = title.lower().split()
+    if not words:
+        return ""
+    w = words[-1].strip(".,!?;:'\"")
+    # crude singularization — handles 'shootings'→'shooting', 'attacks'→'attack'
+    if w.endswith("ies") and len(w) > 4:
+        w = w[:-3] + "y"
+    elif w.endswith("s") and len(w) > 3 and not w.endswith("ss"):
+        w = w[:-1]
+    return w
+
+
 def _shortlist_links(links: list[str], visited: set[str], forbidden: set[str], limit: int = 80) -> list[str]:
     """Filter Wikipedia links to a manageable set before sending to Claude."""
     import re
+    from collections import Counter
     date_re = re.compile(r"^\d{4}s?$|^\d{1,2} \w+$|^\w+ \d{4}$|^List of |^Index of |^Outline of ")
     skip = visited | forbidden
 
-    # Build prefix + suffix sets from visited titles. Candidates that share
-    # either prefix or suffix with a visited title are structurally similar
-    # (e.g. "Anarchism in X" prefix, "[year] Nobel Prize in Literature" suffix)
-    # and unlikely to make real progress — skip them.
+    # Prefix/suffix sets (catch "Anarchism in X" or "[year] Nobel Prize in Literature").
     visited_prefixes: set[str] = set()
     visited_suffixes: set[str] = set()
     for t in visited:
@@ -301,12 +314,23 @@ def _shortlist_links(links: list[str], visited: set[str], forbidden: set[str], l
         if len(s.split()) >= 2:
             visited_suffixes.add(s)
 
+    # Overused trailing-word check (catches "[year] X shooting"/"X killings"/etc.
+    # category clusters where each title differs but the last word repeats).
+    last_word_counts: Counter = Counter()
+    for t in visited:
+        kw = _key_word(t)
+        if kw:
+            last_word_counts[kw] += 1
+    overused_words = {w for w, n in last_word_counts.items() if n >= 2}
+
     filtered = []
     for t in links:
         if t in skip or date_re.match(t) or len(t) <= 2:
             continue
         p, s = _stems(t)
         if p in visited_prefixes or s in visited_suffixes:
+            continue
+        if _key_word(t) in overused_words:
             continue
         filtered.append(t)
     return filtered[:limit]
@@ -398,25 +422,40 @@ def summarize_theme(path_titles: list[str]) -> tuple[str, str]:
     path_str = " → ".join(path_titles)
 
     # Single Claude call for both, returned as JSON so we can split them cleanly.
-    prompt = f"""You are connecting the dots between Wikipedia articles in the voice of James Burke (Connections) and Adam Curtis. Their gift: naming the SPECIFIC mechanism — a technology, a financial instrument, a translator, a friendship, an ideology that mutated — that actually links two seemingly distant things. They favour the concrete over the abstract, the surprising-but-rigorous over the obvious.
+    prompt = f"""You are connecting the dots between Wikipedia articles in the combined voices of JAMES BURKE (Connections) and ADAM CURTIS. Match their voice and their habit of thought.
 
-Here is a path of Wikipedia articles, start to end:
+BURKE traces material and technological chains. He shows how the stirrup made heavy cavalry possible, which required vast estates to maintain knights, which created universities to administer the estates. The voice is plain, the leaps are surprising, the rigor is in the specificity.
+
+CURTIS traces ideological and systemic chains. In Pandora's Box he showed how postwar faith in rational, scientific solutions consistently produced unintended disasters — Soviet cybernetics that made trains run pointlessly to meet tonnage quotas, monetarism that produced mass unemployment, DDT that magnified up the food chain. In HyperNormalisation he traced how power and finance retreated from real complexity after the 1975 NYC fiscal crisis and built a simpler "fake world" — Reagan blaming Gaddafi for terrorism actually run by Syria, John Perry Barlow's cyberspace utopianism delivering more corporate control than governments ever had, Occupy enriching the platforms that hosted its dissent. Curtis names specific people as the conduits — George Shultz, Constance Garnett, Rachel Carson, Henry Kissinger — and identifies the hidden mechanism: what the experts ignored, the feedback they didn't account for, the ideology that mutated into its opposite.
+
+His characteristic moves:
+- Cross-domain leaps (1960s LSD → 1990s cyberspace utopianism via John Perry Barlow)
+- The unintended consequence that becomes the dominant feature
+- Ideologies betraying their origins
+- Specific people as conduits between worlds that don't seem to touch
+- A quietly devastating final observation, never melodrama
+
+Here is a Wikipedia path:
 
 {path_str}
 
-Produce TWO things:
+Produce TWO things in JSON:
 
-1. A short "theme" — 6 to 12 words, like a chapter title. Name the connecting mechanism, not a topic. Examples of the voice:
+1. theme — a 6-12 word chapter title naming the connecting MECHANISM (not the topic). Examples:
    - "via the financial instruments that funded the war"
+   - "the rational solutions that produced their opposite"
+   - "by the academics who would later defect"
    - "tracing how mysticism shaped political dissent in pre-revolutionary Russia"
-   - "through the technologies of mass production that art tried to resist"
-   - "by the artists who would later sell out"
 
-2. A "narrative" — 2 to 3 short paragraphs, ~120-220 words total. Tell the story of how the start actually leads to the end through this specific route. Use specifics: name the people, the dates, the inventions, the ideas. Make at least one observation that is not obvious — a hidden chain or unintended consequence. End the narrative on a note that lands; do not trail off.
+2. narrative — 2-3 short paragraphs (~150-250 words total). Tell the story of how the start actually leads to the end through THIS specific route. Use specifics: name the people, dates, inventions, ideas, places. Make at least one observation that is non-obvious — a hidden chain or unintended consequence. End on a sentence that lands. Do not trail off.
 
-Write in plain, unornamented prose. No "fascinating," no "intriguing," no rhetorical questions. Past tense.
+Voice rules:
+- Plain past tense. No "fascinating," "intriguing," rhetorical questions, or rhetorical flourish.
+- Matter-of-fact, building toward a quietly devastating point.
+- Concrete over abstract. Specific names, dates, mechanisms over generalities.
+- Do not say "this path shows" or "this connection reveals" — just tell the story.
 
-Reply with ONLY this JSON, no preamble, no markdown fences:
+Reply with ONLY JSON, no preamble, no markdown fences:
 {{"theme": "...", "narrative": "..."}}"""
 
     msg = claude_create(

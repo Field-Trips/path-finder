@@ -417,56 +417,67 @@ def action_find_paths():
 
 
 def offer_retry_failed(anchor_url: str, concepts: list[tuple[str, str]], perms: int) -> None:
-    """After a run, list any concept with at least one incomplete (hop-capped) path,
-    and offer to retry that concept with a higher hop cap."""
-    failed: list[tuple[str, str, int, int]] = []  # (title, url, completed_count, incomplete_count)
-    for title, url in concepts:
-        completed_n, incomplete_n = _check_concept_counts(anchor_url, url)
-        if incomplete_n > 0:
-            failed.append((title, url, completed_n, incomplete_n))
+    """Loop: keep listing concepts with at least one hop-capped path and let the
+    user retry with a higher cap. Continues until the user skips or everything
+    completes."""
+    current_pool: list[tuple[str, str]] = list(concepts)
+    last_cap = 15  # default stage-2 cap; ratchets up on each loop
 
-    if not failed:
-        return
+    while True:
+        failed: list[tuple[str, str, int, int]] = []
+        for title, url in current_pool:
+            completed_n, incomplete_n = _check_concept_counts(anchor_url, url)
+            if incomplete_n > 0:
+                failed.append((title, url, completed_n, incomplete_n))
 
-    print(f"\n  {yellow('▲ Some paths hit the hop cap:')}")
-    for i, (t, _, ok, bad) in enumerate(failed, 1):
-        print(f"    {cyan(str(i))}  {t}  {dim(f'({ok} ✓ · {bad} ×)')}")
-    print(f"    {cyan('a')}  Retry all with more hops")
-    print(f"    {cyan('n')}  Skip retry")
-
-    choice = ask("Choice", "n").lower()
-    if choice in ("n", "no", ""):
-        return
-
-    if choice == "a":
-        retry_list = [(t, u) for t, u, _, _ in failed]
-    else:
-        try:
-            idx = int(choice) - 1
-            if 0 <= idx < len(failed):
-                t, u, _, _ = failed[idx]
-                retry_list = [(t, u)]
-            else:
-                print(f"  {yellow('Invalid choice — skipping retry.')}\n")
-                return
-        except ValueError:
-            print(f"  {yellow('Invalid choice — skipping retry.')}\n")
+        if not failed:
             return
 
-    new_cap = ask_int("New hop cap for stage 2 (anchor → concept)", default=25, lo=15, hi=50)
-    print()
+        print(f"\n  {yellow('▲ Some paths hit the hop cap:')}")
+        for i, (t, _, ok, bad) in enumerate(failed, 1):
+            print(f"    {cyan(str(i))}  {t}  {dim(f'({ok} ✓ · {bad} ×)')}")
+        print(f"    {cyan('a')}  Retry all with more hops")
+        print(f"    {cyan('n')}  Skip retry")
 
-    # Re-run with --allow-duplicates so existing paths don't block, and bigger stage2-hops
-    for title, url in retry_list:
-        print(f"\n  {dim('Retrying:')} {bold(title)} {dim(f'(stage 2 cap = {new_cap})')}")
-        cmd = [_venv_python(), "-m", "src.path_finder", "one",
-               "--place", _place_for_anchor(anchor_url),
-               "--anchor", anchor_url,
-               "--concept", url,
-               "--permutations", str(perms),
-               "--stage2-hops", str(new_cap),
-               "--allow-duplicates"]
-        subprocess.run(cmd, cwd=SCRIPT_DIR)
+        choice = ask("Choice", "n").lower()
+        if choice in ("n", "no", ""):
+            return
+
+        if choice == "a":
+            retry_list = [(t, u) for t, u, _, _ in failed]
+        else:
+            try:
+                idx = int(choice) - 1
+                if 0 <= idx < len(failed):
+                    t, u, _, _ = failed[idx]
+                    retry_list = [(t, u)]
+                else:
+                    print(f"  {yellow('Invalid choice — skipping retry.')}\n")
+                    return
+            except ValueError:
+                print(f"  {yellow('Invalid choice — skipping retry.')}\n")
+                return
+
+        # Default next cap is a bit higher than the last attempt, max 50.
+        default_cap = min(max(last_cap + 10, 25), 50)
+        new_cap = ask_int("New hop cap for stage 2 (anchor → concept)", default=default_cap, lo=15, hi=50)
+        last_cap = new_cap
+        print()
+
+        for title, url in retry_list:
+            print(f"\n  {dim('Retrying:')} {bold(title)} {dim(f'(stage 2 cap = {new_cap})')}")
+            cmd = [_venv_python(), "-m", "src.path_finder", "one",
+                   "--place", _place_for_anchor(anchor_url),
+                   "--anchor", anchor_url,
+                   "--concept", url,
+                   "--permutations", str(perms),
+                   "--stage2-hops", str(new_cap),
+                   "--allow-duplicates"]
+            subprocess.run(cmd, cwd=SCRIPT_DIR)
+
+        # Loop: next pass only checks the retry list. If any still incomplete,
+        # we offer another round with an even bigger cap.
+        current_pool = retry_list
 
 
 def _check_concept_counts(anchor_url: str, concept_url: str) -> tuple[int, int]:
