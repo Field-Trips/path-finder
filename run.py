@@ -417,25 +417,26 @@ def action_find_paths():
 
 
 def offer_retry_failed(anchor_url: str, concepts: list[tuple[str, str]], perms: int) -> None:
-    """Loop: keep listing concepts with at least one hop-capped path and let the
-    user retry with a higher cap. Continues until the user skips or everything
-    completes."""
+    """Loop: keep listing concepts with zero completed paths and let the user
+    retry with a higher cap. With the new architecture, incomplete paths are
+    never saved to the DB — so 'failed' simply means 'no completed path yet'.
+    Continues until the user skips or every concept has at least one
+    completed path."""
     current_pool: list[tuple[str, str]] = list(concepts)
     last_cap = 15  # default stage-2 cap; ratchets up on each loop
 
     while True:
-        failed: list[tuple[str, str, int, int]] = []
+        failed: list[tuple[str, str]] = []
         for title, url in current_pool:
-            completed_n, incomplete_n = _check_concept_counts(anchor_url, url)
-            if incomplete_n > 0:
-                failed.append((title, url, completed_n, incomplete_n))
+            if _concept_completed_count(anchor_url, url) == 0:
+                failed.append((title, url))
 
         if not failed:
             return
 
-        print(f"\n  {yellow('▲ Some paths hit the hop cap:')}")
-        for i, (t, _, ok, bad) in enumerate(failed, 1):
-            print(f"    {cyan(str(i))}  {t}  {dim(f'({ok} ✓ · {bad} ×)')}")
+        print(f"\n  {yellow('▲ Some concepts have no completed path yet:')}")
+        for i, (t, _) in enumerate(failed, 1):
+            print(f"    {cyan(str(i))}  {t}")
         print(f"    {cyan('a')}  Retry all with more hops")
         print(f"    {cyan('n')}  Skip retry")
 
@@ -444,13 +445,12 @@ def offer_retry_failed(anchor_url: str, concepts: list[tuple[str, str]], perms: 
             return
 
         if choice == "a":
-            retry_list = [(t, u) for t, u, _, _ in failed]
+            retry_list = list(failed)
         else:
             try:
                 idx = int(choice) - 1
                 if 0 <= idx < len(failed):
-                    t, u, _, _ = failed[idx]
-                    retry_list = [(t, u)]
+                    retry_list = [failed[idx]]
                 else:
                     print(f"  {yellow('Invalid choice — skipping retry.')}\n")
                     return
@@ -480,35 +480,34 @@ def offer_retry_failed(anchor_url: str, concepts: list[tuple[str, str]], perms: 
         current_pool = retry_list
 
 
-def _check_concept_counts(anchor_url: str, concept_url: str) -> tuple[int, int]:
-    """Returns (completed_count, incomplete_count) for paths from this anchor → concept."""
+def _concept_completed_count(anchor_url: str, concept_url: str) -> int:
+    """Number of completed paths from this anchor → concept in the database.
+    Since incomplete paths are no longer saved, this is just the count of rows
+    matching (anchor, concept). Returns 0 if anchor or concept node is unknown."""
     result = subprocess.run(
         [_venv_python(), "-c", f"""
-import sys, json
+import sys
 sys.path.insert(0, '.')
 from dotenv import load_dotenv; load_dotenv(override=True)
 from src.path_finder import sb
 anchor_node = sb.table('nodes').select('id').eq('wikipedia_url', {anchor_url!r}).execute()
 concept_node = sb.table('nodes').select('id').eq('wikipedia_url', {concept_url!r}).execute()
 if not anchor_node.data or not concept_node.data:
-    print('0,0'); sys.exit()
+    print('0'); sys.exit()
 anchor = sb.table('anchors').select('id').eq('node_id', anchor_node.data[0]['id']).execute()
 if not anchor.data:
-    print('0,0'); sys.exit()
-paths = sb.table('paths').select('completed').eq('anchor_id', anchor.data[0]['id']).eq('concept_node_id', concept_node.data[0]['id']).execute()
-ok = sum(1 for p in paths.data if p['completed'])
-bad = sum(1 for p in paths.data if not p['completed'])
-print(f'{{ok}},{{bad}}')
+    print('0'); sys.exit()
+paths = sb.table('paths').select('id').eq('anchor_id', anchor.data[0]['id']).eq('concept_node_id', concept_node.data[0]['id']).eq('completed', True).execute()
+print(len(paths.data))
 """], cwd=SCRIPT_DIR, capture_output=True, text=True,
     )
     out = (result.stdout or "").strip().splitlines()
     if not out:
-        return (0, 0)
+        return 0
     try:
-        ok_str, bad_str = out[-1].split(",")
-        return (int(ok_str), int(bad_str))
+        return int(out[-1])
     except Exception:
-        return (0, 0)
+        return 0
 
 
 def _place_for_anchor(anchor_url: str) -> str:

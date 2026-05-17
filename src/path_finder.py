@@ -341,6 +341,7 @@ def pick_next_hop(
     target_title: str,
     visited: list[str],
     forbidden: set[str],
+    prefer_direct: bool = False,
 ) -> str:
     """
     Ask Claude to pick the next page title from `current.links`.
@@ -357,6 +358,14 @@ def pick_next_hop(
     if not candidates:
         raise ValueError(f"No valid candidates from {current.title!r}")
 
+    bias = (
+        "- takes the MOST DIRECT plausible route toward the target (this run "
+        "is the 'shortest path' attempt — go for the obvious connection),"
+        if prefer_direct else
+        "- prefers a non-obvious but plausible connection over the most "
+        "predictable one (favor surprising links that still get there),"
+    )
+
     def _ask(candidate_list: list[str]) -> str:
         prompt = f"""You are walking the Wikipedia link graph from "{current.title}" toward "{target_title}".
 
@@ -368,7 +377,7 @@ From the current page "{current.title}", here are the available internal links:
 
 Pick exactly ONE link that:
 - moves meaningfully closer to "{target_title}",
-- prefers a non-obvious but plausible connection over the most predictable one,
+{bias}
 - is not in the visited or avoid lists.
 
 Reply with ONLY the chosen title, exactly as it appears in the list above. No quotes, no explanation."""
@@ -639,7 +648,7 @@ def insert_path(
 # Main loop
 # ---------------------------------------------------------------------------
 
-def find_path(start: str, end: str, forbidden: set[str], max_hops: int = MAX_HOPS) -> Path:
+def find_path(start: str, end: str, forbidden: set[str], max_hops: int = MAX_HOPS, prefer_direct: bool = False) -> Path:
     """
     Walk from `start` to `end` one hop at a time, up to max_hops.
     `forbidden` is intermediate titles to avoid (for diversity across permutations).
@@ -661,6 +670,7 @@ def find_path(start: str, end: str, forbidden: set[str], max_hops: int = MAX_HOP
             target_title=end,
             visited=visited,
             forbidden=forbidden,
+            prefer_direct=prefer_direct,
         )
 
         # If Claude picked the end directly, we're done — don't re-fetch.
@@ -731,14 +741,18 @@ def run_scenario(
             return []
 
     for i in range(permutations):
-        print(f"\n  → Permutation {i + 1}/{permutations}")
+        # First permutation goes for the most direct route. The rest are
+        # told to prefer non-obvious connections, for diversity.
+        prefer_direct = (i == 0)
+        bias_label = "direct" if prefer_direct else "non-obvious"
+
+        print(f"\n  → Permutation {i + 1}/{permutations}  ({bias_label})")
         print(f"    Stage 1: {place_page.title} → {anchor_page.title}")
-        stage1 = find_path(place_page.title, anchor_page.title, forbidden=forbidden, max_hops=stage1_hops)
+        stage1 = find_path(place_page.title, anchor_page.title, forbidden=forbidden, max_hops=stage1_hops, prefer_direct=prefer_direct)
 
         print(f"    Stage 2: {anchor_page.title} → {concept_page.title}")
-        stage2 = find_path(anchor_page.title, concept_page.title, forbidden=forbidden, max_hops=stage2_hops)
+        stage2 = find_path(anchor_page.title, concept_page.title, forbidden=forbidden, max_hops=stage2_hops, prefer_direct=prefer_direct)
 
-        # Combine: stage1 hops + stage2 hops (drop duplicate anchor at the join)
         combined_hops = stage1.hops + stage2.hops[1:]
         completed = stage1.completed and stage2.completed
 
@@ -748,22 +762,25 @@ def run_scenario(
             hops=combined_hops,
             completed=completed,
         )
-        if completed:
-            forbidden.update(combined_hops[1:-1])
-            theme, narrative = summarize_theme(combined_hops)
-            path.theme = theme
-            path.narrative = narrative
         results.append(path)
 
-        # Persist nodes
+        if not completed:
+            # ARCHITECTURE: never save incomplete paths. The DB only holds
+            # real completed connections. Retries are treated as fresh attempts.
+            print(f"    {' ' * 0}↳ Hit hop cap. Not saved to DB.")
+            continue
+
+        forbidden.update(combined_hops[1:-1])
+        theme, narrative = summarize_theme(combined_hops)
+        path.theme = theme
+        path.narrative = narrative
+
+        # Persist nodes only for completed paths
         node_ids: list[int] = []
         for title in combined_hops:
             page = fetch_wiki_page(title)
             node_ids.append(upsert_node(page))
 
-        # Always record the user's INTENDED destination, not where the search
-        # ended up. Failed (hop-capped) paths previously stored the last-visited
-        # node as concept_node_id, which made retry lookups miss them entirely.
         insert_path(
             place_node_id=place_node_id,
             concept_node_id=concept_node_id,
