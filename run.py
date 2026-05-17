@@ -137,26 +137,16 @@ def _venv_python(script_dir: str) -> str:
     return venv
 
 
-def run_path_finder(
-    start_url: str,
-    end_url: str,
-    perms: int,
-    is_monhegan: bool,
-    located_in: str,
-) -> None:
+def run_path_finder(start_url: str, place_url: str, perms: int) -> None:
     script_dir = os.path.dirname(os.path.abspath(__file__))
     venv_python = _venv_python(script_dir)
 
     cmd = [
         venv_python, "-m", "src.path_finder", "one",
         "--start", start_url,
-        "--end",   end_url,
+        "--place", place_url,
         "--permutations", str(perms),
     ]
-    if is_monhegan:
-        cmd.append("--is-monhegan-object")
-    if located_in:
-        cmd += ["--located-in", located_in]
 
     print(f"\n  {dim('Running … (Ctrl+C to stop)')}\n")
     print("  " + "─" * 50)
@@ -176,25 +166,14 @@ def main() -> None:
     print(BANNER)
     print(TIP)
 
-    # ── start article ────────────────────────────────────────────────────────
-    start_title, start_url = resolve_article("Start")
+    # ── object article ───────────────────────────────────────────────────────
+    start_title, start_url = resolve_article("Object")
 
-    # ── Monhegan metadata ────────────────────────────────────────────────────
-    is_monhegan = ask_yes_no(f"  Is {bold(start_title)} a Monhegan object?")
-    located_in = ""
-    if is_monhegan:
-        print(f"  {dim('Enter the Wikipedia title or URL of the place it belongs to.')}")
-        print(f"  {dim('Press Enter to skip (you can add this later).')}")
-        raw = ask("  Located in (e.g. 'Monhegan Island')", "")
-        if raw:
-            print(f"     {dim('Checking location...')}", end="\r")
-            located_in = raw
-            print("                             ", end="\r")
-            print(f"     {green('✓')} Location set to: {bold(raw)}\n")
+    # ── place article ────────────────────────────────────────────────────────
+    print(f"  {dim('What place does')} {bold(start_title)} {dim('belong to?')}")
+    print(f"  {dim('This is where the path will end (e.g. \"Monhegan Island\", \"Maine\", \"New York City\").')}")
     print()
-
-    # ── end article ──────────────────────────────────────────────────────────
-    end_title, end_url = resolve_article("End")
+    place_title, place_url = resolve_article("Place")
 
     # ── permutations ─────────────────────────────────────────────────────────
     print(f"  {bold('How many distinct paths?')}  {dim('1 = quick · 3 = standard · 5 = thorough')}")
@@ -203,10 +182,8 @@ def main() -> None:
 
     # ── confirm ──────────────────────────────────────────────────────────────
     print(f"  {bold('Ready to run:')}")
-    print(f"    Start       {green(start_title)}")
-    if is_monhegan:
-        print(f"    Monhegan    {green('yes')}" + (f"  · located in {green(located_in)}" if located_in else ""))
-    print(f"    End         {green(end_title)}")
+    print(f"    Object      {green(start_title)}")
+    print(f"    Place       {green(place_title)}")
     print(f"    Paths       {green(str(perms))}")
     print(f"\n  {dim('Each path takes ~30–90 s. All results save to Supabase automatically.')}\n")
 
@@ -220,7 +197,7 @@ def main() -> None:
         print("  Cancelled.\n")
         sys.exit(0)
 
-    run_path_finder(start_url, end_url, perms, is_monhegan, located_in)
+    run_path_finder(start_url, place_url, perms)
 
 
 if __name__ == "__main__":

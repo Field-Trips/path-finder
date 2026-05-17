@@ -348,26 +348,19 @@ sb: Client = create_client(
 def upsert_node(
     page: WikiPage,
     node_type: Optional[str] = None,
-    is_monhegan_object: bool = False,
     located_in_id: Optional[int] = None,
 ) -> int:
     """
     Upsert a node by wikipedia_url. Returns the node id.
 
     If node_type is None and the row is new, classify_node_type() before insert.
-    If the row already exists, we still update is_monhegan_object and located_in
-    if new information is being provided (never downgrade an existing True flag).
+    If the row already exists and located_in_id is provided, backfill it if missing.
     """
-    result = sb.table("nodes").select("id,is_monhegan_object,located_in").eq("wikipedia_url", page.url).execute()
+    result = sb.table("nodes").select("id,located_in").eq("wikipedia_url", page.url).execute()
     if result.data:
         existing = result.data[0]
-        updates: dict = {}
-        if is_monhegan_object and not existing.get("is_monhegan_object"):
-            updates["is_monhegan_object"] = True
         if located_in_id and not existing.get("located_in"):
-            updates["located_in"] = located_in_id
-        if updates:
-            sb.table("nodes").update(updates).eq("id", existing["id"]).execute()
+            sb.table("nodes").update({"located_in": located_in_id}).eq("id", existing["id"]).execute()
         return existing["id"]
 
     if node_type is None:
@@ -379,7 +372,6 @@ def upsert_node(
         "node_type": node_type,
         "intro_text": (page.intro_text or "")[:4000] or None,
         "image_url": page.image_url,
-        "is_monhegan_object": is_monhegan_object,
         "located_in": located_in_id,
     }
     insert_result = sb.table("nodes").upsert(row, on_conflict="wikipedia_url").execute()
@@ -466,29 +458,25 @@ def find_path(start: str, end: str, forbidden: set[str], max_hops: int = MAX_HOP
 
 def run_scenario(
     start: str,
-    end: str,
+    place: str,
     permutations: int = DEFAULT_PERMUTATIONS,
     max_hops: int = MAX_HOPS,
-    start_is_monhegan_object: bool = False,
-    start_located_in: Optional[str] = None,
 ) -> list[Path]:
     """
-    Produce `permutations` distinct paths from start → end.
+    Produce `permutations` distinct paths from start → place.
 
-    start_is_monhegan_object: marks the start node with is_monhegan_object=True in Supabase.
-    start_located_in: title or URL of a place the start node belongs to (sets located_in FK).
+    `place` is both the end of the path and the located_in value for the start node.
+    Every path in Field Trips connects an object to the place it belongs to.
     """
     forbidden: set[str] = set()
     results: list[Path] = []
-    group = f"{normalize_title(start)}__{normalize_title(end)}"
+    group = f"{normalize_title(start)}__{normalize_title(place)}"
 
-    located_in_id: Optional[int] = None
-    if start_located_in:
-        print(f"  Resolving location: {start_located_in!r} …")
-        located_in_id = resolve_located_in(start_located_in)
+    print(f"  Resolving place: {place!r} …")
+    located_in_id = resolve_located_in(place)
 
     for i in range(permutations):
-        path = find_path(start, end, forbidden=forbidden, max_hops=max_hops)
+        path = find_path(start, place, forbidden=forbidden, max_hops=max_hops)
         if path.completed:
             forbidden.update(path.hops[1:-1])
             path.theme = summarize_theme(path.hops)
@@ -498,11 +486,7 @@ def run_scenario(
         for idx, title in enumerate(path.hops):
             page = fetch_wiki_page(title)
             if idx == 0:
-                nid = upsert_node(
-                    page,
-                    is_monhegan_object=start_is_monhegan_object,
-                    located_in_id=located_in_id,
-                )
+                nid = upsert_node(page, located_in_id=located_in_id)
             else:
                 nid = upsert_node(page)
             node_ids.append(nid)
@@ -522,24 +506,13 @@ def cli():
 
 
 @cli.command()
-@click.option("--start", required=True, help="Wikipedia page title or URL (start).")
-@click.option("--end", required=True, help="Wikipedia page title or URL (end).")
+@click.option("--start", required=True, help="Wikipedia page title or URL (the object).")
+@click.option("--place", required=True, help="Wikipedia page title or URL of the place it belongs to (also the path end).")
 @click.option("--permutations", default=DEFAULT_PERMUTATIONS, type=int)
 @click.option("--max-hops", default=MAX_HOPS, type=int)
-@click.option("--is-monhegan-object", is_flag=True, default=False,
-              help="Tag the start node as a Monhegan object in the database.")
-@click.option("--located-in", default=None,
-              help="Title or Wikipedia URL of the place the start article belongs to (sets located_in FK).")
-def one(start: str, end: str, permutations: int, max_hops: int,
-        is_monhegan_object: bool, located_in: Optional[str]):
-    """Run a single (start, end) scenario."""
-    paths = run_scenario(
-        start, end,
-        permutations=permutations,
-        max_hops=max_hops,
-        start_is_monhegan_object=is_monhegan_object,
-        start_located_in=located_in,
-    )
+def one(start: str, place: str, permutations: int, max_hops: int):
+    """Find paths from an object to the place it belongs to."""
+    paths = run_scenario(start, place, permutations=permutations, max_hops=max_hops)
     for i, p in enumerate(paths, 1):
         status = "✓" if p.completed else "× (hop cap)"
         print(f"\n[{i}] {status}  {p.theme or ''}")
