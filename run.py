@@ -417,20 +417,20 @@ def action_find_paths():
 
 
 def offer_retry_failed(anchor_url: str, concepts: list[tuple[str, str]], perms: int) -> None:
-    """After a run, check which concepts have no completed path from this anchor.
-    Offer to retry them with a higher hop cap."""
-    failed: list[tuple[str, str]] = []
+    """After a run, list any concept with at least one incomplete (hop-capped) path,
+    and offer to retry that concept with a higher hop cap."""
+    failed: list[tuple[str, str, int, int]] = []  # (title, url, completed_count, incomplete_count)
     for title, url in concepts:
-        status = _check_concept_status(anchor_url, url)
-        if status == "incomplete":
-            failed.append((title, url))
+        completed_n, incomplete_n = _check_concept_counts(anchor_url, url)
+        if incomplete_n > 0:
+            failed.append((title, url, completed_n, incomplete_n))
 
     if not failed:
         return
 
-    print(f"\n  {yellow('▲ Some concepts did not complete:')}")
-    for i, (t, _) in enumerate(failed, 1):
-        print(f"    {cyan(str(i))}  {t}")
+    print(f"\n  {yellow('▲ Some paths hit the hop cap:')}")
+    for i, (t, _, ok, bad) in enumerate(failed, 1):
+        print(f"    {cyan(str(i))}  {t}  {dim(f'({ok} ✓ · {bad} ×)')}")
     print(f"    {cyan('a')}  Retry all with more hops")
     print(f"    {cyan('n')}  Skip retry")
 
@@ -439,12 +439,13 @@ def offer_retry_failed(anchor_url: str, concepts: list[tuple[str, str]], perms: 
         return
 
     if choice == "a":
-        retry_list = failed
+        retry_list = [(t, u) for t, u, _, _ in failed]
     else:
         try:
             idx = int(choice) - 1
             if 0 <= idx < len(failed):
-                retry_list = [failed[idx]]
+                t, u, _, _ = failed[idx]
+                retry_list = [(t, u)]
             else:
                 print(f"  {yellow('Invalid choice — skipping retry.')}\n")
                 return
@@ -455,7 +456,7 @@ def offer_retry_failed(anchor_url: str, concepts: list[tuple[str, str]], perms: 
     new_cap = ask_int("New hop cap for stage 2 (anchor → concept)", default=25, lo=15, hi=50)
     print()
 
-    # Re-run with --allow-duplicates so the failed path doesn't block, and bigger stage2-hops
+    # Re-run with --allow-duplicates so existing paths don't block, and bigger stage2-hops
     for title, url in retry_list:
         print(f"\n  {dim('Retrying:')} {bold(title)} {dim(f'(stage 2 cap = {new_cap})')}")
         cmd = [_venv_python(), "-m", "src.path_finder", "one",
@@ -468,33 +469,35 @@ def offer_retry_failed(anchor_url: str, concepts: list[tuple[str, str]], perms: 
         subprocess.run(cmd, cwd=SCRIPT_DIR)
 
 
-def _check_concept_status(anchor_url: str, concept_url: str) -> str:
-    """Returns 'completed' / 'incomplete' / 'none' for paths from this anchor to this concept."""
+def _check_concept_counts(anchor_url: str, concept_url: str) -> tuple[int, int]:
+    """Returns (completed_count, incomplete_count) for paths from this anchor → concept."""
     result = subprocess.run(
         [_venv_python(), "-c", f"""
 import sys, json
 sys.path.insert(0, '.')
 from dotenv import load_dotenv; load_dotenv(override=True)
 from src.path_finder import sb
-# Find anchor_id and concept_node_id
 anchor_node = sb.table('nodes').select('id').eq('wikipedia_url', {anchor_url!r}).execute()
 concept_node = sb.table('nodes').select('id').eq('wikipedia_url', {concept_url!r}).execute()
 if not anchor_node.data or not concept_node.data:
-    print('none'); sys.exit()
+    print('0,0'); sys.exit()
 anchor = sb.table('anchors').select('id').eq('node_id', anchor_node.data[0]['id']).execute()
 if not anchor.data:
-    print('none'); sys.exit()
+    print('0,0'); sys.exit()
 paths = sb.table('paths').select('completed').eq('anchor_id', anchor.data[0]['id']).eq('concept_node_id', concept_node.data[0]['id']).execute()
-if not paths.data:
-    print('none')
-elif any(p['completed'] for p in paths.data):
-    print('completed')
-else:
-    print('incomplete')
+ok = sum(1 for p in paths.data if p['completed'])
+bad = sum(1 for p in paths.data if not p['completed'])
+print(f'{{ok}},{{bad}}')
 """], cwd=SCRIPT_DIR, capture_output=True, text=True,
     )
     out = (result.stdout or "").strip().splitlines()
-    return out[-1] if out else "none"
+    if not out:
+        return (0, 0)
+    try:
+        ok_str, bad_str = out[-1].split(",")
+        return (int(ok_str), int(bad_str))
+    except Exception:
+        return (0, 0)
 
 
 def _place_for_anchor(anchor_url: str) -> str:
