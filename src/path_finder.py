@@ -363,23 +363,15 @@ sb: Client = create_client(
 )
 
 
-def upsert_node(
-    page: WikiPage,
-    node_type: Optional[str] = None,
-    located_in_id: Optional[int] = None,
-) -> int:
+def upsert_node(page: WikiPage, node_type: Optional[str] = None) -> int:
     """
     Upsert a node by wikipedia_url. Returns the node id.
 
     If node_type is None and the row is new, classify_node_type() before insert.
-    If the row already exists and located_in_id is provided, backfill it if missing.
     """
-    result = sb.table("nodes").select("id,located_in").eq("wikipedia_url", page.url).execute()
+    result = sb.table("nodes").select("id").eq("wikipedia_url", page.url).execute()
     if result.data:
-        existing = result.data[0]
-        if located_in_id and not existing.get("located_in"):
-            sb.table("nodes").update({"located_in": located_in_id}).eq("id", existing["id"]).execute()
-        return existing["id"]
+        return result.data[0]["id"]
 
     if node_type is None:
         node_type = classify_node_type(page)
@@ -390,81 +382,112 @@ def upsert_node(
         "node_type": node_type,
         "intro_text": (page.intro_text or "")[:4000] or None,
         "image_url": page.image_url,
-        "located_in": located_in_id,
     }
     insert_result = sb.table("nodes").upsert(row, on_conflict="wikipedia_url").execute()
     return insert_result.data[0]["id"]
 
 
-def resolve_located_in(title_or_url: str) -> int:
-    """Get or create a node for a location (e.g. 'Monhegan Island'). Returns its id."""
+def resolve_node(title_or_url: str) -> tuple[int, WikiPage]:
+    """Fetch a Wikipedia page, upsert its node, return (node_id, page)."""
     page = fetch_wiki_page(title_or_url)
-    return upsert_node(page)
+    return upsert_node(page), page
 
 
-VISUAL_TYPES = {"person", "place", "thing"}
+# ---------------------------------------------------------------------------
+# Anchors
+# ---------------------------------------------------------------------------
 
-
-def select_representative(node_ids: list[int], node_meta: dict) -> int:
+def add_anchor(
+    anchor_title_or_url: str,
+    place_title_or_url: str,
+    rationale: Optional[str] = None,
+    custom_image_url: Optional[str] = None,
+) -> dict:
     """
-    Pick the representative node for a path — the person/place/thing that
-    will be visually pinned on the map.
+    Create or update an anchor. Returns the anchor row.
 
-    Priority:
-      1. Start node, if it's a person/place/thing with an image (the object IS visual)
-      2. Walking backwards from place: first person/place/thing that has an image
-      3. Walking backwards from place: first person/place/thing (image not required)
-      4. Start node as final fallback
+    An anchor is a curated person/place/thing pinned on the map of a place.
     """
-    start_meta = node_meta.get(node_ids[0], {})
+    anchor_id_node, anchor_page = resolve_node(anchor_title_or_url)
+    place_id_node, place_page = resolve_node(place_title_or_url)
 
-    # 1. Start node is already concrete and visual
-    if start_meta.get("node_type") in VISUAL_TYPES and start_meta.get("image_url"):
-        return node_ids[0]
+    # Upsert by (node_id, place_node_id)
+    existing = (
+        sb.table("anchors")
+        .select("*")
+        .eq("node_id", anchor_id_node)
+        .eq("place_node_id", place_id_node)
+        .execute()
+    )
+    if existing.data:
+        updates = {}
+        if rationale is not None:
+            updates["rationale"] = rationale
+        if custom_image_url is not None:
+            updates["custom_image_url"] = custom_image_url
+        if updates:
+            result = sb.table("anchors").update(updates).eq("id", existing.data[0]["id"]).execute()
+            return result.data[0]
+        return existing.data[0]
 
-    # Intermediate hops only (skip start and end/place)
-    middle = node_ids[1:-1]
+    row = {
+        "node_id": anchor_id_node,
+        "place_node_id": place_id_node,
+        "rationale": rationale,
+        "custom_image_url": custom_image_url,
+    }
+    result = sb.table("anchors").insert(row).execute()
+    return result.data[0]
 
-    # 2. Walk backwards: person/place/thing with image (closest pivot to the place)
-    for nid in reversed(middle):
-        meta = node_meta.get(nid, {})
-        if meta.get("node_type") in VISUAL_TYPES and meta.get("image_url"):
-            return nid
 
-    # 3. Walk backwards: person/place/thing without image requirement
-    for nid in reversed(middle):
-        meta = node_meta.get(nid, {})
-        if meta.get("node_type") in VISUAL_TYPES:
-            return nid
+def list_anchors(place_title_or_url: Optional[str] = None) -> list[dict]:
+    """List anchors. If place is provided, filter to that place."""
+    query = sb.table("anchors").select(
+        "id,rationale,custom_image_url,created_at,"
+        "node:nodes!anchors_node_id_fkey(id,title,wikipedia_url,node_type,image_url),"
+        "place:nodes!anchors_place_node_id_fkey(id,title,wikipedia_url)"
+    )
+    if place_title_or_url:
+        place_page = fetch_wiki_page(place_title_or_url)
+        place_row = sb.table("nodes").select("id").eq("wikipedia_url", place_page.url).execute()
+        if not place_row.data:
+            return []
+        query = query.eq("place_node_id", place_row.data[0]["id"])
+    return query.order("id").execute().data
 
-    # 4. Final fallback
-    return node_ids[0]
 
+def delete_anchor(anchor_id: int) -> None:
+    """Delete an anchor by id."""
+    sb.table("anchors").delete().eq("id", anchor_id).execute()
+
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
 
 def insert_path(
-    start_node_id: int,
-    end_node_id: int,
+    place_node_id: int,
+    concept_node_id: int,
     hops: list[int],
     theme: str,
     completed: bool,
     group: str,
-    representative_node_id: Optional[int] = None,
+    anchor_id: Optional[int] = None,
 ) -> int:
     """
     Insert a path row and its edges.
 
-    `hops` is the ordered list of node ids from start to end inclusive.
-    Convention: `paths.total_hops` is the number of EDGES, so total_hops = len(hops) - 1.
-    Edges are derived from consecutive pairs in `hops` (zero-indexed `position_in_path`).
+    `hops` is the ordered list of node ids: [place, ..., anchor, ..., concept].
+    `total_hops` = number of edges = len(hops) - 1.
     """
     path_result = sb.table("paths").insert({
-        "start_node_id": start_node_id,
-        "end_node_id": end_node_id,
+        "place_node_id": place_node_id,
+        "concept_node_id": concept_node_id,
         "total_hops": len(hops) - 1,
         "theme": theme or None,
         "completed": completed,
         "permutation_group": group,
-        "representative_node_id": representative_node_id,
+        "anchor_id": anchor_id,
     }).execute()
     path_id = path_result.data[0]["id"]
 
@@ -528,53 +551,78 @@ def find_path(start: str, end: str, forbidden: set[str], max_hops: int = MAX_HOP
     return Path(start_title=start, end_title=end, hops=visited, completed=False)
 
 
+STAGE1_HOPS = 4   # Place → Anchor (tight, anchors are close to their place)
+STAGE2_HOPS = 15  # Anchor → Concept (the broader journey)
+
+
 def run_scenario(
-    start: str,
     place: str,
+    anchor: str,
+    concept: str,
     permutations: int = DEFAULT_PERMUTATIONS,
-    max_hops: int = MAX_HOPS,
+    stage1_hops: int = STAGE1_HOPS,
+    stage2_hops: int = STAGE2_HOPS,
 ) -> list[Path]:
     """
-    Produce `permutations` distinct paths from start → place.
+    Produce `permutations` distinct paths from Place → Anchor → Concept.
 
-    `place` is both the end of the path and the located_in value for the start node.
-    Every path in Field Trips connects an object to the place it belongs to.
+    Two-stage pathfinding:
+      Stage 1: Place → Anchor  (tight, default 4 hops)
+      Stage 2: Anchor → Concept (broad, default 15 hops)
     """
     forbidden: set[str] = set()
     results: list[Path] = []
-    group = f"{normalize_title(start)}__{normalize_title(place)}"
+    group = f"{normalize_title(place)}__{normalize_title(anchor)}__{normalize_title(concept)}"
 
-    print(f"  Resolving place: {place!r} …")
-    located_in_id = resolve_located_in(place)
+    print(f"  Resolving place:   {place!r} …")
+    place_node_id, place_page = resolve_node(place)
+    print(f"  Resolving anchor:  {anchor!r} …")
+    anchor_node_id, anchor_page = resolve_node(anchor)
+    print(f"  Resolving concept: {concept!r} …")
+    concept_node_id, concept_page = resolve_node(concept)
+
+    # Ensure anchor row exists (auto-create if needed).
+    anchor_row = add_anchor(anchor_page.url, place_page.url)
+    anchor_id = anchor_row["id"]
 
     for i in range(permutations):
-        path = find_path(start, place, forbidden=forbidden, max_hops=max_hops)
-        if path.completed:
-            forbidden.update(path.hops[1:-1])
-            path.theme = summarize_theme(path.hops)
+        print(f"\n  → Permutation {i + 1}/{permutations}")
+        print(f"    Stage 1: {place_page.title} → {anchor_page.title}")
+        stage1 = find_path(place_page.title, anchor_page.title, forbidden=forbidden, max_hops=stage1_hops)
+
+        print(f"    Stage 2: {anchor_page.title} → {concept_page.title}")
+        stage2 = find_path(anchor_page.title, concept_page.title, forbidden=forbidden, max_hops=stage2_hops)
+
+        # Combine: stage1 hops + stage2 hops (drop duplicate anchor at the join)
+        combined_hops = stage1.hops + stage2.hops[1:]
+        completed = stage1.completed and stage2.completed
+
+        path = Path(
+            start_title=place_page.title,
+            end_title=concept_page.title,
+            hops=combined_hops,
+            completed=completed,
+        )
+        if completed:
+            forbidden.update(combined_hops[1:-1])
+            path.theme = summarize_theme(combined_hops)
         results.append(path)
 
+        # Persist nodes
         node_ids: list[int] = []
-        for idx, title in enumerate(path.hops):
+        for title in combined_hops:
             page = fetch_wiki_page(title)
-            if idx == 0:
-                nid = upsert_node(page, located_in_id=located_in_id)
-            else:
-                nid = upsert_node(page)
-            node_ids.append(nid)
+            node_ids.append(upsert_node(page))
 
-        # Fetch node metadata (type + image) to select representative
-        node_rows = sb.table("nodes").select("id,title,node_type,image_url").in_("id", node_ids).execute().data
-        node_meta = {row["id"]: row for row in node_rows}
-
-        rep_id = select_representative(node_ids, node_meta)
-        rep = node_meta.get(rep_id, {})
-        path.representative_node_id = rep_id
-        path.representative_title = rep.get("title")
-        path.representative_type = rep.get("node_type")
-        path.representative_image = rep.get("image_url")
-
-        insert_path(node_ids[0], node_ids[-1], node_ids, path.theme or "", path.completed, group, rep_id)
+        insert_path(
+            place_node_id=node_ids[0],
+            concept_node_id=node_ids[-1],
+            hops=node_ids,
+            theme=path.theme or "",
+            completed=path.completed,
+            group=group,
+            anchor_id=anchor_id,
+        )
 
     return results
 
@@ -589,36 +637,65 @@ def cli():
 
 
 @cli.command()
-@click.option("--start", required=True, help="Wikipedia page title or URL (the object).")
-@click.option("--place", required=True, help="Wikipedia page title or URL of the place it belongs to (also the path end).")
+@click.option("--place",   required=True, help="Wikipedia title or URL of the Place (e.g. 'Monhegan Island').")
+@click.option("--anchor",  required=True, help="Wikipedia title or URL of the Anchor (the person/place/thing pinned on the map).")
+@click.option("--concept", required=True, help="Wikipedia title or URL of the Concept (the destination idea/event).")
 @click.option("--permutations", default=DEFAULT_PERMUTATIONS, type=int)
-@click.option("--max-hops", default=MAX_HOPS, type=int)
-def one(start: str, place: str, permutations: int, max_hops: int):
-    """Find paths from an object to the place it belongs to."""
-    paths = run_scenario(start, place, permutations=permutations, max_hops=max_hops)
+@click.option("--stage1-hops", default=STAGE1_HOPS, type=int, help="Max hops for Place → Anchor.")
+@click.option("--stage2-hops", default=STAGE2_HOPS, type=int, help="Max hops for Anchor → Concept.")
+def one(place: str, anchor: str, concept: str, permutations: int, stage1_hops: int, stage2_hops: int):
+    """Find paths: Place → Anchor → Concept."""
+    paths = run_scenario(
+        place=place, anchor=anchor, concept=concept,
+        permutations=permutations,
+        stage1_hops=stage1_hops, stage2_hops=stage2_hops,
+    )
     for i, p in enumerate(paths, 1):
         status = "✓" if p.completed else "× (hop cap)"
         print(f"\n[{i}] {status}  {p.theme or ''}")
         print("    " + " → ".join(p.hops))
-        if p.representative_title:
-            has_img = "  · has image" if p.representative_image else "  · no image"
-            print(f"    📍 Representative: {p.representative_title}  ({p.representative_type}{has_img})")
 
 
-@cli.command()
-@click.option("--scenarios", "scenarios_path", default="scenarios.yaml", type=click.Path(exists=True))
-def run(scenarios_path: str):
-    """Run every scenario in a YAML file."""
-    with open(scenarios_path) as f:
-        cfg = yaml.safe_load(f)
-    defaults = cfg.get("defaults", {})
-    for s in cfg.get("scenarios", []):
-        run_scenario(
-            start=s["start"],
-            end=s["end"],
-            permutations=s.get("permutations", defaults.get("permutations", DEFAULT_PERMUTATIONS)),
-            max_hops=s.get("max_hops", defaults.get("max_hops", MAX_HOPS)),
-        )
+@cli.group()
+def anchor():
+    """Manage anchors (curated objects pinned to a place)."""
+
+
+@anchor.command("add")
+@click.option("--place",     required=True, help="Wikipedia title or URL of the place.")
+@click.option("--anchor",    "anchor_url", required=True, help="Wikipedia title or URL of the anchor.")
+@click.option("--rationale", default=None, help="Optional: why this anchor belongs to this place.")
+@click.option("--image",     default=None, help="Optional: custom image URL.")
+def anchor_add(place: str, anchor_url: str, rationale: Optional[str], image: Optional[str]):
+    """Add (or update) an anchor."""
+    row = add_anchor(anchor_url, place, rationale=rationale, custom_image_url=image)
+    print(f"✓ Anchor #{row['id']} saved.")
+
+
+@anchor.command("list")
+@click.option("--place", default=None, help="Filter to a specific place (Wikipedia title or URL).")
+def anchor_list(place: Optional[str]):
+    """List all anchors (optionally filtered by place)."""
+    rows = list_anchors(place)
+    if not rows:
+        print("No anchors yet.")
+        return
+    for r in rows:
+        node = r.get("node") or {}
+        place_node = r.get("place") or {}
+        rationale = (r.get("rationale") or "").strip()
+        line = f"  [{r['id']}] {node.get('title')}  →  on {place_node.get('title')}"
+        if rationale:
+            line += f"\n        “{rationale[:120]}{'…' if len(rationale) > 120 else ''}”"
+        print(line)
+
+
+@anchor.command("remove")
+@click.option("--id", "anchor_id", required=True, type=int, help="Anchor id to delete.")
+def anchor_remove(anchor_id: int):
+    """Delete an anchor by id."""
+    delete_anchor(anchor_id)
+    print(f"✓ Anchor #{anchor_id} removed.")
 
 
 if __name__ == "__main__":
