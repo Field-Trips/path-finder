@@ -173,18 +173,23 @@ def pick_place() -> tuple[str, str]:
         print(f"     {yellow('Please pick a number or n.')}")
 
 
-def pick_anchor(place_url: str = "", place_title: str = "") -> dict:
+def pick_anchor(place_url: str = "", place_title: str = "", exclude_url: str = "", prompt_label: str = "Pick an anchor") -> dict:
     """Show existing anchors (optionally filtered to a place); user picks one or adds new.
-    Returns full anchor record."""
+    Returns full anchor record.
+
+    `exclude_url` lets the caller hide a specific anchor (e.g. the primary anchor
+    when picking a branch anchor)."""
     anchors = fetch_anchors(place_url)
+    if exclude_url:
+        anchors = [a for a in anchors if a.get("wikipedia_url") != exclude_url]
     label = f" on {bold(place_title)}" if place_title else ""
     where = f" on {place_title}" if place_title else ""
 
     if not anchors:
-        print(f"  {dim('No anchors saved yet' + where + ' — adding a new one.')}")
+        print(f"  {dim('No' + (' other' if exclude_url else '') + ' anchors saved yet' + where + ' — adding a new one.')}")
         return inline_add_anchor(prefilled_place_url=place_url, prefilled_place_title=place_title)
 
-    print(f"\n  {bold('Pick an anchor' + label + ':')}")
+    print(f"\n  {bold(prompt_label + label + ':')}")
     for i, a in enumerate(anchors, 1):
         node_type = a.get("node_type") or "?"
         place_suffix = "" if place_url else f" · on {a.get('place_title') or '?'}"
@@ -216,6 +221,16 @@ def inline_add_anchor(prefilled_place_url: str = "", prefilled_place_title: str 
         print(f"  {dim('Place:')} {bold(place_title)}\n")
     else:
         place_title, place_url = pick_place()
+
+    # Sanity check: show existing anchors on this place so the user doesn't
+    # accidentally re-add one or forget what's there.
+    existing = fetch_anchors(place_url)
+    if existing:
+        print(f"  {dim('Existing anchors on')} {bold(place_title)}{dim(':')}")
+        for a in existing:
+            node_type = a.get("node_type") or "?"
+            print(f"    {dim('·')} {a.get('title')}  {dim('(' + node_type + ')')}")
+        print()
 
     anchor_title, anchor_url = resolve_article(
         "Anchor — Wikipedia title or URL (the person/place/thing being pinned, e.g. 'Lobster trap', 'Rockwell Kent')"
@@ -414,6 +429,80 @@ def action_find_paths():
 
     # Retry-failed flow: check for concepts that didn't complete on this anchor
     offer_retry_failed(anchor_url, concepts, perms)
+
+
+def action_create_indirect_path():
+    """Place → Anchor → Branch Anchor → Concept, deliberately constructed."""
+    print(f"\n  {bold('Create new indirect path')}")
+    print(f"  {dim('Place → Anchor → Branch Anchor → Concept. The path passes through TWO anchors on the same place.')}\n")
+
+    # Step 1: place
+    place_title, place_url = pick_place()
+
+    # Step 2: primary anchor (the one the visitor first picks up on the map)
+    print(f"\n  {dim('First, the primary anchor — the object visitors first encounter on the map.')}")
+    primary = pick_anchor(place_url=place_url, place_title=place_title, prompt_label="Pick the primary anchor")
+    if not primary:
+        return
+    primary_title = primary["title"]
+    primary_url   = primary["wikipedia_url"]
+
+    # Step 3: branch anchor (the bridge object the path travels through)
+    print(f"\n  {dim('Next, the branch anchor — the second object the path travels through on its way to the concept.')}")
+    branch = pick_anchor(
+        place_url=place_url,
+        place_title=place_title,
+        exclude_url=primary_url,
+        prompt_label="Pick the branch anchor",
+    )
+    if not branch:
+        return
+    branch_title = branch["title"]
+    branch_url   = branch["wikipedia_url"]
+
+    # Step 4: concepts
+    concepts = ask_concepts()
+    if not concepts:
+        print("  Cancelled.\n")
+        return
+
+    print(f"  {bold('How many distinct paths per concept?')}  {dim('1 = quick · 3 = standard')}")
+    perms = ask_int("Permutations", default=1, lo=1, hi=5)
+    print()
+
+    print(f"  {bold('Ready to run:')}")
+    print(f"    Place             {green(place_title)}")
+    print(f"    Primary anchor    {green(primary_title)}")
+    print(f"    Branch anchor     {green(branch_title)}")
+    for i, (t, _) in enumerate(concepts, 1):
+        label = "Concepts" if i == 1 else "        "
+        print(f"    {label}          {green(t)}")
+    print(f"    Paths each        {green(str(perms))}")
+    print(f"\n  {dim('Path will travel: ' + place_title + ' → ' + primary_title + ' → ' + branch_title + ' → [concept]')}")
+    print(f"  {dim('Each path takes ~2-4 minutes (three stages instead of two).')}\n")
+
+    try:
+        go = input(f"  {bold('→')} Go? [Y/n]: ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        print("\n\nCancelled.")
+        return
+    if go not in ("", "y", "yes"):
+        print("  Cancelled.\n")
+        return
+
+    print(f"\n  {dim('Running … (Ctrl+C to stop)')}\n")
+    print("  " + "─" * 50)
+    for title, url in concepts:
+        print(f"\n  {dim('Concept:')} {bold(title)}")
+        cmd = [_venv_python(), "-m", "src.path_finder", "branched",
+               "--place",         place_url,
+               "--anchor",        primary_url,
+               "--branch-anchor", branch_url,
+               "--concept",       url,
+               "--permutations",  str(perms)]
+        subprocess.run(cmd, cwd=SCRIPT_DIR)
+    print("  " + "─" * 50)
+    print(f"\n  {green('Done.')}\n")
 
 
 def offer_retry_failed(anchor_url: str, concepts: list[tuple[str, str]], perms: int) -> None:
@@ -630,9 +719,10 @@ def main() -> None:
 
     while True:
         print(f"  {bold('What would you like to do?')}")
-        print(f"    {cyan('1')}  Create new path   {dim('(Place → Anchor → Concept)')}")
-        print(f"    {cyan('2')}  Add an anchor     {dim('(pin a person/place/thing on a map)')}")
-        print(f"    {cyan('3')}  List anchors")
+        print(f"    {cyan('1')}  Create new path            {dim('(Place → Anchor → Concept)')}")
+        print(f"    {cyan('2')}  Create new indirect path   {dim('(Place → Anchor → Branch → Concept)')}")
+        print(f"    {cyan('3')}  Add an anchor              {dim('(pin a person/place/thing on a map)')}")
+        print(f"    {cyan('4')}  List anchors")
         print(f"    {cyan('q')}  Quit")
         print()
 
@@ -640,8 +730,10 @@ def main() -> None:
         if choice in ("1", ""):
             action_find_paths()
         elif choice == "2":
-            action_add_anchor()
+            action_create_indirect_path()
         elif choice == "3":
+            action_add_anchor()
+        elif choice == "4":
             action_list_anchors()
         elif choice in ("q", "quit", "exit"):
             print("  Bye.\n")

@@ -486,12 +486,20 @@ Produce TWO things in JSON:
 
 2. narrative — 2-3 short paragraphs (~150-250 words total). Tell the story of how the start actually leads to the end through THIS specific route. Use specifics: name the people, the dates, the institutions. Make at least one observation that is non-obvious — a hidden chain, a stacked biographical detail, an unintended consequence. End on a sentence that lands. Do not trail off.
 
+About the KIND of connection — important:
+Not every path is a chain of direct causation. Many are chains of THEMATIC RESONANCE: articles that belong to a single long pattern — a long history of state violence, of artistic experiment, of religious dissent, of technological optimism gone bad, of women whose deaths went uninvestigated. When that's the shape of the path, the connection IS real: the destination is a specific instance of a much longer pattern, and the path articulates that lineage. Frame it that way.
+
+This is one of Curtis's most characteristic moves: take a single event and locate it as the latest entry in a long lineage that runs through institutions, geographies, decades. "Pennington County sits inside a criminal justice apparatus that runs from capital punishment to assassination to the killing of Martin Luther King Jr. to a cascade of American shootings that end, finally, in a Texas prison break." That kind of cumulative framing IS the connection.
+
+NEVER end the narrative with phrases like "nobody connected them to any of this", "unrelated", "no real link", or similar dismissals. The path itself is the connection. Your job is to name what the path is collectively ABOUT and place the destination inside that pattern.
+
 Voice rules:
 - Plain past tense. Short declarative sentences. No "fascinating," "intriguing," rhetorical questions, or rhetorical flourish.
 - Stack matter-of-fact clauses; let the cumulative effect do the work.
 - Concrete over abstract. Specific names, dates, places, small physical details.
 - Do not say "this path shows" or "this connection reveals" — just tell the story.
 - Light irony is fine; sneering is not.
+- End on a sentence that lands. It can be quiet, devastating, or thematic — but never dismissive.
 
 Reply with ONLY JSON, no preamble, no markdown fences:
 {{"theme": "...", "narrative": "..."}}"""
