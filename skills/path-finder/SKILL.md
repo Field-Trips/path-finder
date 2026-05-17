@@ -6,15 +6,36 @@ description: >
 
 # Field Trips Path-Finder
 
-Collect three inputs, run the script, display the output. Nothing else.
+## Step 1 — Show this form exactly once
 
-## Step 1 — Collect inputs
+Call AskUserQuestion with these three questions, exactly as written. Do not change the options, labels, or descriptions.
 
-Use `AskUserQuestion` with three plain text fields (no suggestions):
+Question 1:
+- question: "Object"
+- header: "Object"
+- options:
+  - label: "Paste a Wikipedia URL"
+    description: "The article to start from — e.g. https://en.wikipedia.org/wiki/Mutual_aid"
+  - label: "Or type a title"
+    description: "Exact Wikipedia article title — e.g. Rockwell Kent"
 
-1. **Object** — the Wikipedia article to start from
-2. **Place** — the Wikipedia article where the object belongs (this is also the path end)
-3. **Permutations** — number of paths to find (default: 1)
+Question 2:
+- question: "Place"
+- header: "Place"
+- options:
+  - label: "Paste a Wikipedia URL"
+    description: "Where the object belongs — e.g. https://en.wikipedia.org/wiki/Monhegan,_Maine"
+  - label: "Or type a title"
+    description: "Exact Wikipedia article title — e.g. Monhegan Island"
+
+Question 3:
+- question: "Permutations"
+- header: "Paths"
+- options:
+  - label: "1"
+    description: "One path — ~1 minute"
+  - label: "3"
+    description: "Three paths — ~3–5 minutes"
 
 ## Step 2 — Run
 
@@ -26,6 +47,6 @@ cd $HOME/field-trips/path-finder && \
     --permutations {n}
 ```
 
-## Step 3 — Display output
+## Step 3 — Print output
 
-Print the raw output from the script. Do not summarize, analyze, or add commentary. If it errors, show the error exactly as printed.
+Print the script output exactly. No commentary.

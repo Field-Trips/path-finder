@@ -64,7 +64,7 @@ SUPABASE_SERVICE_ROLE_KEY = _require_env(
     "SUPABASE_SERVICE_ROLE_KEY", "It should start with eyJ — get it from Supabase → Project Settings → API"
 )
 
-MAX_HOPS = int(os.environ.get("MAX_HOPS", "10"))
+MAX_HOPS = int(os.environ.get("MAX_HOPS", "15"))
 DEFAULT_PERMUTATIONS = int(os.environ.get("DEFAULT_PERMUTATIONS", "3"))
 CLAUDE_MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6")
 
