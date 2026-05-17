@@ -233,9 +233,52 @@ def fetch_wiki_page(title_or_url: str) -> WikiPage:
 claude = Anthropic(api_key=ANTHROPIC_API_KEY)
 
 
-def _prefix(title: str, n: int = 2) -> str:
-    """Return the first n words of a title, lowercased."""
-    return " ".join(title.lower().split()[:n])
+def claude_create(**kwargs):
+    """
+    Wrapper around claude.messages.create() with retry on rate-limit errors.
+
+    On HTTP 429 (Anthropic rate limit), wait with exponential backoff and retry
+    up to 6 times. Other errors propagate. Adds small random jitter so multiple
+    parallel processes don't all wake up and re-collide on the limit.
+    """
+    import time
+    import random
+    from anthropic import RateLimitError, APIConnectionError, APIStatusError
+
+    last_err: Exception = RuntimeError("unreachable")
+    for attempt in range(6):
+        try:
+            return claude.messages.create(**kwargs)
+        except RateLimitError as e:
+            last_err = e
+            wait = min(30 * (2 ** attempt), 240) + random.uniform(0, 5)
+            print(f"  ⏳ Rate limit hit — waiting {wait:.0f}s before retry ({attempt + 1}/6)…", flush=True)
+            time.sleep(wait)
+        except (APIConnectionError, APIStatusError) as e:
+            # Transient API/network — short backoff, fewer retries
+            last_err = e
+            if attempt >= 3:
+                raise
+            wait = 5 * (2 ** attempt) + random.uniform(0, 2)
+            print(f"  ⏳ Anthropic API issue — waiting {wait:.0f}s before retry ({attempt + 1}/4)…", flush=True)
+            time.sleep(wait)
+    raise last_err
+
+
+def _stems(title: str) -> tuple[str, str]:
+    """
+    Returns (first-2-words, last-2-words) of a title, lowercased.
+    If the first word is a 4-digit year (e.g. '1933 Nobel Prize in Literature'),
+    that year is stripped before computing the prefix — so titles that differ
+    ONLY by year still get treated as the same structural pattern.
+    """
+    words = title.lower().split()
+    if words and len(words[0]) == 4 and words[0].isdigit():
+        words = words[1:]
+    if len(words) < 2:
+        s = " ".join(words)
+        return (s, s)
+    return (" ".join(words[:2]), " ".join(words[-2:]))
 
 
 def _shortlist_links(links: list[str], visited: set[str], forbidden: set[str], limit: int = 80) -> list[str]:
@@ -244,18 +287,27 @@ def _shortlist_links(links: list[str], visited: set[str], forbidden: set[str], l
     date_re = re.compile(r"^\d{4}s?$|^\d{1,2} \w+$|^\w+ \d{4}$|^List of |^Index of |^Outline of ")
     skip = visited | forbidden
 
-    # Build 2-word prefixes from all visited titles (e.g. "anarchism in" from
-    # "Anarchism in New Zealand"). Candidates that share a prefix are structurally
-    # the same kind of article and unlikely to make progress — skip them.
-    visited_prefixes = {_prefix(t) for t in visited if len(t.split()) >= 2}
+    # Build prefix + suffix sets from visited titles. Candidates that share
+    # either prefix or suffix with a visited title are structurally similar
+    # (e.g. "Anarchism in X" prefix, "[year] Nobel Prize in Literature" suffix)
+    # and unlikely to make real progress — skip them.
+    visited_prefixes: set[str] = set()
+    visited_suffixes: set[str] = set()
+    for t in visited:
+        p, s = _stems(t)
+        if len(p.split()) >= 2:
+            visited_prefixes.add(p)
+        if len(s.split()) >= 2:
+            visited_suffixes.add(s)
 
-    filtered = [
-        t for t in links
-        if t not in skip
-        and not date_re.match(t)
-        and len(t) > 2
-        and _prefix(t) not in visited_prefixes
-    ]
+    filtered = []
+    for t in links:
+        if t in skip or date_re.match(t) or len(t) <= 2:
+            continue
+        p, s = _stems(t)
+        if p in visited_prefixes or s in visited_suffixes:
+            continue
+        filtered.append(t)
     return filtered[:limit]
 
 
@@ -295,7 +347,7 @@ Pick exactly ONE link that:
 - is not in the visited or avoid lists.
 
 Reply with ONLY the chosen title, exactly as it appears in the list above. No quotes, no explanation."""
-        msg = claude.messages.create(
+        msg = claude_create(
             model=CLAUDE_MODEL,
             max_tokens=200,
             messages=[{"role": "user", "content": prompt}],
@@ -324,7 +376,7 @@ Title: {page.title}
 Intro: {page.intro_text[:1500]}
 
 Reply with ONLY the single word."""
-    msg = claude.messages.create(
+    msg = claude_create(
         model=CLAUDE_MODEL,
         max_tokens=10,
         messages=[{"role": "user", "content": prompt}],
@@ -344,7 +396,7 @@ In 6 words or fewer, summarize what THEME connects the start to the end. Example
 - "by way of ecological restoration"
 
 Reply with ONLY the phrase, no quotes."""
-    msg = claude.messages.create(
+    msg = claude_create(
         model=CLAUDE_MODEL,
         max_tokens=40,
         messages=[{"role": "user", "content": prompt}],
@@ -589,13 +641,14 @@ def run_scenario(
     anchor_row = add_anchor(anchor_page.url, place_page.url)
     anchor_id = anchor_row["id"]
 
-    # Duplicate check — if this anchor → concept already has any paths, skip.
+    # Duplicate check — only skip if there's at least one COMPLETED path.
+    # Incomplete paths (hit hop cap) are fair game to retry.
     if not allow_duplicates:
         existing = sb.table("paths").select("id,total_hops,completed").eq("anchor_id", anchor_id).eq("concept_node_id", concept_node_id).execute()
-        if existing.data:
-            count = len(existing.data)
-            ids = ", ".join(f"#{p['id']}" for p in existing.data)
-            print(f"\n  ⚠  Skipping: {count} existing path(s) already connect")
+        completed_existing = [p for p in existing.data if p.get("completed")]
+        if completed_existing:
+            ids = ", ".join(f"#{p['id']}" for p in completed_existing)
+            print(f"\n  ⚠  Skipping: {len(completed_existing)} completed path(s) already connect")
             print(f"     {anchor_page.title} → {concept_page.title}  ({ids})")
             print(f"     Pass --allow-duplicates to run anyway.\n")
             return []

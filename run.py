@@ -412,6 +412,98 @@ def action_find_paths():
     else:
         print(f"\n  {red('Something went wrong')} — see the error above.\n")
 
+    # Retry-failed flow: check for concepts that didn't complete on this anchor
+    offer_retry_failed(anchor_url, concepts, perms)
+
+
+def offer_retry_failed(anchor_url: str, concepts: list[tuple[str, str]], perms: int) -> None:
+    """After a run, check which concepts have no completed path from this anchor.
+    Offer to retry them with a higher hop cap."""
+    failed: list[tuple[str, str]] = []
+    for title, url in concepts:
+        status = _check_concept_status(anchor_url, url)
+        if status == "incomplete":
+            failed.append((title, url))
+
+    if not failed:
+        return
+
+    print(f"\n  {yellow('▲ Some concepts did not complete:')}")
+    for i, (t, _) in enumerate(failed, 1):
+        print(f"    {cyan(str(i))}  {t}")
+    print(f"    {cyan('a')}  Retry all with more hops")
+    print(f"    {cyan('n')}  Skip retry")
+
+    choice = ask("Choice", "n").lower()
+    if choice in ("n", "no", ""):
+        return
+
+    if choice == "a":
+        retry_list = failed
+    else:
+        try:
+            idx = int(choice) - 1
+            if 0 <= idx < len(failed):
+                retry_list = [failed[idx]]
+            else:
+                print(f"  {yellow('Invalid choice — skipping retry.')}\n")
+                return
+        except ValueError:
+            print(f"  {yellow('Invalid choice — skipping retry.')}\n")
+            return
+
+    new_cap = ask_int("New hop cap for stage 2 (anchor → concept)", default=25, lo=15, hi=50)
+    print()
+
+    # Re-run with --allow-duplicates so the failed path doesn't block, and bigger stage2-hops
+    for title, url in retry_list:
+        print(f"\n  {dim('Retrying:')} {bold(title)} {dim(f'(stage 2 cap = {new_cap})')}")
+        cmd = [_venv_python(), "-m", "src.path_finder", "one",
+               "--place", _place_for_anchor(anchor_url),
+               "--anchor", anchor_url,
+               "--concept", url,
+               "--permutations", str(perms),
+               "--stage2-hops", str(new_cap),
+               "--allow-duplicates"]
+        subprocess.run(cmd, cwd=SCRIPT_DIR)
+
+
+def _check_concept_status(anchor_url: str, concept_url: str) -> str:
+    """Returns 'completed' / 'incomplete' / 'none' for paths from this anchor to this concept."""
+    result = subprocess.run(
+        [_venv_python(), "-c", f"""
+import sys, json
+sys.path.insert(0, '.')
+from dotenv import load_dotenv; load_dotenv(override=True)
+from src.path_finder import sb
+# Find anchor_id and concept_node_id
+anchor_node = sb.table('nodes').select('id').eq('wikipedia_url', {anchor_url!r}).execute()
+concept_node = sb.table('nodes').select('id').eq('wikipedia_url', {concept_url!r}).execute()
+if not anchor_node.data or not concept_node.data:
+    print('none'); sys.exit()
+anchor = sb.table('anchors').select('id').eq('node_id', anchor_node.data[0]['id']).execute()
+if not anchor.data:
+    print('none'); sys.exit()
+paths = sb.table('paths').select('completed').eq('anchor_id', anchor.data[0]['id']).eq('concept_node_id', concept_node.data[0]['id']).execute()
+if not paths.data:
+    print('none')
+elif any(p['completed'] for p in paths.data):
+    print('completed')
+else:
+    print('incomplete')
+"""], cwd=SCRIPT_DIR, capture_output=True, text=True,
+    )
+    out = (result.stdout or "").strip().splitlines()
+    return out[-1] if out else "none"
+
+
+def _place_for_anchor(anchor_url: str) -> str:
+    """Look up the place URL for an anchor."""
+    for a in fetch_anchors():
+        if a["wikipedia_url"] == anchor_url:
+            return a.get("place_wikipedia_url", "")
+    return ""
+
 
 # ── main menu ───────────────────────────────────────────────────────────────
 
