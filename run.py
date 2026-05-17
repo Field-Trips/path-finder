@@ -259,6 +259,66 @@ def action_list_anchors():
     print()
 
 
+def ask_concepts() -> list[tuple[str, str]]:
+    """Collect 1-5 concepts, one per line. Each is validated against Wikipedia.
+    Blank line finishes the list. Returns list of (title, url) tuples."""
+    print(f"\n  {bold('Concepts')}")
+    print(f"  {dim('Enter one Wikipedia title or URL per line. Blank line to finish. Max 5.')}\n")
+
+    out: list[tuple[str, str]] = []
+    while len(out) < 5:
+        n = len(out) + 1
+        label = f"Concept #{n}"
+        raw = ask(f"{label} (Wikipedia title or URL, blank to {'finish' if out else 'cancel'})", "")
+        if not raw:
+            if out:
+                break
+            return []
+        # Validate
+        title, url = _validate_wikipedia(raw)
+        if title:
+            out.append((title, url))
+    if len(out) == 5:
+        print(f"  {dim('Reached 5-concept cap (rate limit guidance).')}\n")
+    return out
+
+
+def _validate_wikipedia(raw: str) -> tuple[str, str]:
+    """Validate a Wikipedia title/URL, returning (title, url) or ('', '') if invalid."""
+    print(f"     {dim('Checking Wikipedia...')}", end="\r")
+    result = subprocess.run(
+        [_venv_python(), "-c", f"""
+import sys, json
+sys.path.insert(0, '.')
+from dotenv import load_dotenv; load_dotenv(override=True)
+from src.path_finder import fetch_wiki_page, DisambiguationError
+try:
+    p = fetch_wiki_page({raw!r})
+    print(json.dumps({{"ok": True, "title": p.title, "url": p.url}}))
+except DisambiguationError as e:
+    print(json.dumps({{"ok": False, "disambiguation": True, "options": e.options[:8]}}))
+except ValueError as e:
+    print(json.dumps({{"ok": False, "msg": str(e)}}))
+"""], cwd=SCRIPT_DIR, capture_output=True, text=True,
+    )
+    print("                                    ", end="\r")
+    try:
+        data = json.loads(result.stdout.strip().splitlines()[-1])
+    except Exception:
+        print(f"     {red('Unexpected error.')}")
+        return "", ""
+    if data.get("ok"):
+        print(f"     {green('✓')} {bold(data['title'])}")
+        return data["title"], data["url"]
+    if data.get("disambiguation"):
+        print(f"     {yellow('Disambiguation')} — pick from:")
+        for opt in data.get("options", []):
+            print(f"       {dim('•')} {opt}")
+    else:
+        print(f"     {red('Not found:')} {data.get('msg', 'unknown')}")
+    return "", ""
+
+
 def pick_place_or_all() -> tuple[str, str]:
     """Like pick_place but also offers 'All places'. Returns ('', '') for all."""
     places = fetch_places()
@@ -299,20 +359,23 @@ def action_find_paths():
         # Shouldn't happen, but guard anyway
         place_title, place_url = pick_place()
 
-    concept_title, concept_url = resolve_article(
-        "Concept — Wikipedia title or URL (the destination idea/event, e.g. 'Conservation movement', 'Marxism')"
-    )
+    concepts = ask_concepts()
+    if not concepts:
+        print("  Cancelled.\n")
+        return
 
     print(f"  {bold('How many distinct paths?')}  {dim('1 = quick · 3 = standard · 5 = thorough')}")
     perms = ask_int("Permutations", default=1, lo=1, hi=10)
     print()
 
     print(f"  {bold('Ready to run:')}")
-    print(f"    Place    {green(place_title)}")
-    print(f"    Anchor   {green(anchor_title)}")
-    print(f"    Concept  {green(concept_title)}")
-    print(f"    Paths    {green(str(perms))}")
-    print(f"\n  {dim('Each path takes ~1–3 minutes. Results save to Supabase automatically.')}\n")
+    print(f"    Place      {green(place_title)}")
+    print(f"    Anchor     {green(anchor_title)}")
+    for i, (t, _) in enumerate(concepts, 1):
+        label = "Concepts" if i == 1 else "        "
+        print(f"    {label}   {green(t)}")
+    print(f"    Paths each {green(str(perms))}")
+    print(f"\n  {dim('Each path takes ~1–3 minutes. Concepts run in parallel.')}\n")
 
     try:
         go = input(f"  {bold('→')} Go? [Y/n]: ").strip().lower()
@@ -323,11 +386,18 @@ def action_find_paths():
         print("  Cancelled.\n")
         return
 
-    cmd = [_venv_python(), "-m", "src.path_finder", "one",
-           "--place", place_url,
-           "--anchor", anchor_url,
-           "--concept", concept_url,
-           "--permutations", str(perms)]
+    if len(concepts) == 1:
+        cmd = [_venv_python(), "-m", "src.path_finder", "one",
+               "--place", place_url,
+               "--anchor", anchor_url,
+               "--concept", concepts[0][1],
+               "--permutations", str(perms)]
+    else:
+        cmd = [_venv_python(), "-m", "src.path_finder", "batch",
+               "--place", place_url,
+               "--anchor", anchor_url,
+               "--concepts", ",".join(t for _, t in [(c[0], c[1]) for c in concepts]),
+               "--permutations", str(perms)]
 
     print(f"\n  {dim('Running … (Ctrl+C to stop)')}\n")
     print("  " + "─" * 50)
