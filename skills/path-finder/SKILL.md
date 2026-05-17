@@ -10,8 +10,6 @@ Minimum round trips. Bundle questions. Show output. No analysis.
 
 ## Step 1 — Preflight (single bash call)
 
-Always start by fetching places AND anchors in parallel so the form can be filled in ONE shot:
-
 ```bash
 cd $HOME/field-trips/path-finder
 echo "PLACES:"
@@ -22,37 +20,37 @@ echo "ANCHORS:"
 
 Parse both JSON blobs.
 
-## Step 2 — ONE big form (single AskUserQuestion with 4 questions)
+## Step 2 — Bundled form (ONE AskUserQuestion with 4 questions)
 
-Call AskUserQuestion with all four questions at once. The user fills them all in before submitting.
+The user fills in ALL questions before submitting. The free-text fields are entered via the "Other" option on each question.
 
 Question 1:
 - question: "What do you want to do?"
 - header: "Action"
 - options:
   - label: "Find paths"
-    description: "Run paths from anchor → concept"
+    description: "Anchor → concept paths"
   - label: "Add anchors"
-    description: "Pin new anchors to a place (skip Anchor + Concepts below)"
+    description: "Pin new anchors to a place"
   - label: "List anchors"
-    description: "Just show what's saved (skip the rest)"
+    description: "Just show what's saved"
 
 Question 2:
-- question: "Anchor (skip if just listing)"
+- question: "Anchor (for Find paths)"
 - header: "Anchor"
-- options: (one per existing anchor) `label: "<title>"` `description: "<node_type> · on <place_title>"`, then `label: "+ New anchor"` `description: "I'll add one — type Wikipedia URLs in Concepts below"`
+- options: (one per existing anchor) `label: "<title>"` `description: "<node_type> · on <place_title>"`, then `label: "+ New anchor"` `description: "Type its Wikipedia URL in Other"`
 
 Question 3:
-- question: "Concepts — one Wikipedia title or URL per line. Up to 5 per batch. (For Find paths: destinations. For Add anchors: the anchor URLs.)"
-- header: "Concepts / URLs"
+- question: "Click 'Other' below and paste one Wikipedia title/URL per line (concepts if finding paths, anchor URLs if adding). Up to 5."
+- header: "URLs"
 - options:
-  - label: "(typed below)"
-    description: "Use Other and paste one per line — e.g. Marxism, Conservation movement"
-  - label: "(skip)"
-    description: "Only for List anchors"
+  - label: "I'll paste in Other below"
+    description: "One per line"
+  - label: "Just list anchors"
+    description: "No URLs needed for the List action"
 
 Question 4:
-- question: "Paths per concept (only used for Find paths)"
+- question: "How many paths per concept? (Find paths only)"
 - header: "Paths"
 - options:
   - label: "1"
@@ -62,16 +60,16 @@ Question 4:
 
 ## Step 3 — Run (single bash call)
 
-Based on Q1:
+Branch on Q1:
 
 ### Find paths
-If anchor is an existing one, use its `wikipedia_url` from preflight JSON. Place is inferred from that anchor's `place_wikipedia_url`. Then run all concepts in parallel:
+Anchor URL: use the picked anchor's `wikipedia_url` from preflight. Place URL: use that anchor's `place_wikipedia_url`.
 
 ```bash
 cd $HOME/field-trips/path-finder
 mkdir -p /tmp/pf-logs && rm -f /tmp/pf-logs/*.log
-PLACE="<place_wikipedia_url>"
-ANCHOR="<anchor_wikipedia_url>"
+PLACE="<place_url>"
+ANCHOR="<anchor_url>"
 PERMS=<1 or 3>
 while IFS= read -r CONCEPT; do
   [ -z "$CONCEPT" ] && continue
@@ -91,11 +89,11 @@ done
 ```
 
 ### Add anchors
-If the user picked "+ New anchor" or chose "Add anchors" as action, the URLs in Q3 are anchor URLs (not concepts). Default place is the first existing place (or ask in a follow-up if there are 0 or 2+).
+URLs in Q3 are anchor URLs. Use the first place from preflight (or ask one follow-up if there are 0/multiple).
 
 ```bash
 cd $HOME/field-trips/path-finder
-PLACE="<place_wikipedia_url>"
+PLACE="<place_url>"
 while IFS= read -r ANCHOR; do
   [ -z "$ANCHOR" ] && continue
   .venv/bin/python -m src.path_finder anchor add --place "$PLACE" --anchor "$ANCHOR"
@@ -112,7 +110,7 @@ cd $HOME/field-trips/path-finder && .venv/bin/python -m src.path_finder anchor l
 
 ## Rules
 
-- Maximum 3 round trips total: preflight, form, run.
-- Bundle all questions in ONE AskUserQuestion call.
-- Never analyse the output. Print it verbatim.
-- If user is missing info (e.g. picked "+ New anchor" and didn't enter URLs), ask ONE follow-up — never a string of questions.
+- Max 3 round trips: preflight, form, run.
+- Bundle all 4 questions in ONE AskUserQuestion call.
+- Never analyse the output — print verbatim.
+- If a follow-up is unavoidable (e.g. user picked "+ New anchor" but didn't enter URLs), ask only ONE more question.
