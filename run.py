@@ -173,24 +173,28 @@ def pick_place() -> tuple[str, str]:
         print(f"     {yellow('Please pick a number or n.')}")
 
 
-def pick_anchor() -> dict:
-    """Show existing anchors; user picks one or adds new. Returns full anchor record."""
-    anchors = fetch_anchors()
-    if not anchors:
-        print(f"  {dim('No anchors saved yet — adding a new one.')}")
-        return inline_add_anchor()
+def pick_anchor(place_url: str = "", place_title: str = "") -> dict:
+    """Show existing anchors (optionally filtered to a place); user picks one or adds new.
+    Returns full anchor record."""
+    anchors = fetch_anchors(place_url)
+    label = f" on {bold(place_title)}" if place_title else ""
+    where = f" on {place_title}" if place_title else ""
 
-    print(f"\n  {bold('Pick an anchor:')}")
+    if not anchors:
+        print(f"  {dim('No anchors saved yet' + where + ' — adding a new one.')}")
+        return inline_add_anchor(prefilled_place_url=place_url, prefilled_place_title=place_title)
+
+    print(f"\n  {bold('Pick an anchor' + label + ':')}")
     for i, a in enumerate(anchors, 1):
-        place = a.get("place_title") or "?"
         node_type = a.get("node_type") or "?"
-        print(f"    {cyan(str(i))}  {a['title']}  {dim(f'({node_type} · on {place})')}")
+        place_suffix = "" if place_url else f" · on {a.get('place_title') or '?'}"
+        print(f"    {cyan(str(i))}  {a['title']}  {dim(f'({node_type}{place_suffix})')}")
     print(f"    {cyan('n')}  + Add new anchor")
 
     while True:
         choice = ask("Choice", "1").lower()
         if choice == "n":
-            return inline_add_anchor()
+            return inline_add_anchor(prefilled_place_url=place_url, prefilled_place_title=place_title)
         try:
             idx = int(choice) - 1
             if 0 <= idx < len(anchors):
@@ -202,12 +206,17 @@ def pick_anchor() -> dict:
         print(f"     {yellow('Please pick a number or n.')}")
 
 
-def inline_add_anchor() -> dict:
+def inline_add_anchor(prefilled_place_url: str = "", prefilled_place_title: str = "") -> dict:
     """Add a new anchor and return its record so it can flow into the next step."""
     print(f"\n  {bold('Add a new anchor')}")
     print(f"  {dim('An anchor is a person/place/thing pinned on the map of a place.')}\n")
 
-    place_title, place_url = pick_place()
+    if prefilled_place_url:
+        place_title, place_url = prefilled_place_title, prefilled_place_url
+        print(f"  {dim('Place:')} {bold(place_title)}\n")
+    else:
+        place_title, place_url = pick_place()
+
     anchor_title, anchor_url = resolve_article(
         "Anchor — Wikipedia title or URL (the person/place/thing being pinned, e.g. 'Lobster trap', 'Rockwell Kent')"
     )
@@ -256,26 +265,27 @@ def action_list_anchors():
 
 
 def ask_concepts() -> list[tuple[str, str]]:
-    """Collect 1-5 concepts, one per line. Each is validated against Wikipedia.
-    Blank line finishes the list. Returns list of (title, url) tuples."""
+    """Collect 1-5 concepts as a comma-separated list. Each is validated against Wikipedia.
+    Tip: paste URLs to avoid commas-in-titles issues. Returns list of (title, url) tuples."""
     print(f"\n  {bold('Concepts')}")
-    print(f"  {dim('Enter one Wikipedia title or URL per line. Blank line to finish. Max 5.')}\n")
+    print(f"  {dim('Comma-separated. Max 5. Paste Wikipedia URLs for precision.')}")
+    print(f"  {dim('Example: https://en.wikipedia.org/wiki/Marxism, https://en.wikipedia.org/wiki/Anthroposophy')}\n")
+
+    raw = ask("Concepts", "")
+    if not raw:
+        return []
+    items = [c.strip() for c in raw.split(",") if c.strip()]
+    if len(items) > 5:
+        print(f"  {yellow('More than 5 concepts — capping at 5 to stay under rate limits.')}")
+        items = items[:5]
 
     out: list[tuple[str, str]] = []
-    while len(out) < 5:
-        n = len(out) + 1
-        label = f"Concept #{n}"
-        raw = ask(f"{label} (Wikipedia title or URL, blank to {'finish' if out else 'cancel'})", "")
-        if not raw:
-            if out:
-                break
-            return []
-        # Validate
-        title, url = _validate_wikipedia(raw)
+    for i, item in enumerate(items, 1):
+        print(f"\n  {dim(f'[{i}/{len(items)}]')} {item}")
+        title, url = _validate_wikipedia(item)
         if title:
             out.append((title, url))
-    if len(out) == 5:
-        print(f"  {dim('Reached 5-concept cap (rate limit guidance).')}\n")
+    print()
     return out
 
 
@@ -339,22 +349,20 @@ def pick_place_or_all() -> tuple[str, str]:
 
 
 def action_find_paths():
-    print(f"\n  {bold('Find paths')}")
-    print(f"  {dim('Pick an anchor, then say what concept you want to connect it to.')}\n")
+    print(f"\n  {bold('Create new path')}")
+    print(f"  {dim('Place → Anchor → Concept. Pick or create each in order.')}\n")
 
-    anchor = pick_anchor()
+    # Step 1: place
+    place_title, place_url = pick_place()
+
+    # Step 2: anchor (filtered to this place)
+    anchor = pick_anchor(place_url=place_url, place_title=place_title)
     if not anchor:
         return
-
     anchor_title = anchor["title"]
     anchor_url   = anchor["wikipedia_url"]
-    place_title  = anchor.get("place_title") or "?"
-    place_url    = anchor.get("place_wikipedia_url") or ""
 
-    if not place_url:
-        # Shouldn't happen, but guard anyway
-        place_title, place_url = pick_place()
-
+    # Step 3: concepts (comma-separated)
     concepts = ask_concepts()
     if not concepts:
         print("  Cancelled.\n")
@@ -413,7 +421,7 @@ def main() -> None:
 
     while True:
         print(f"  {bold('What would you like to do?')}")
-        print(f"    {cyan('1')}  Find paths        {dim('(Place → Anchor → Concept)')}")
+        print(f"    {cyan('1')}  Create new path   {dim('(Place → Anchor → Concept)')}")
         print(f"    {cyan('2')}  Add an anchor     {dim('(pin a person/place/thing on a map)')}")
         print(f"    {cyan('3')}  List anchors")
         print(f"    {cyan('q')}  Quit")
