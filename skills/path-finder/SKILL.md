@@ -1,178 +1,118 @@
 ---
 name: path-finder
 description: >
-  Field Trips path-finder widget. Wrapper around the local Python script. Use when Sarah or Jeremy wants to find paths, add anchors, or list anchors. Optimised for BULK operations — runs many concepts in parallel. Use for "find paths", "add anchor", "list anchors", "connect X to Y", "build paths for Monhegan", etc.
+  Field Trips path-finder widget. Bulk-runs Wikipedia paths and manages anchors. Use when Sarah or Jeremy wants to find paths, add anchors, list anchors, "connect X to Y", "build paths for Monhegan", etc.
 ---
 
 # Path-finder widget
 
-You are a thin wrapper. Run bash. Show output. Do not analyse or summarise.
+Minimum round trips. Bundle questions. Show output. No analysis.
 
-## Step 1 — Main menu
+## Step 1 — Preflight (single bash call)
 
-Call AskUserQuestion:
-- question: "What would you like to do?"
+Always start by fetching places AND anchors in parallel so the form can be filled in ONE shot:
+
+```bash
+cd $HOME/field-trips/path-finder
+echo "PLACES:"
+.venv/bin/python -m src.path_finder places --json
+echo "ANCHORS:"
+.venv/bin/python -m src.path_finder anchor list --json
+```
+
+Parse both JSON blobs.
+
+## Step 2 — ONE big form (single AskUserQuestion with 4 questions)
+
+Call AskUserQuestion with all four questions at once. The user fills them all in before submitting.
+
+Question 1:
+- question: "What do you want to do?"
 - header: "Action"
 - options:
-  - label: "Find paths (bulk)"
-    description: "Pick a place + anchor, run many concepts in parallel"
+  - label: "Find paths"
+    description: "Run paths from anchor → concept"
   - label: "Add anchors"
-    description: "Pin one or more Wikipedia articles as anchors on a place"
+    description: "Pin new anchors to a place (skip Anchor + Concepts below)"
   - label: "List anchors"
-    description: "Show all saved anchors"
+    description: "Just show what's saved (skip the rest)"
 
-Branch on the answer.
+Question 2:
+- question: "Anchor (skip if just listing)"
+- header: "Anchor"
+- options: (one per existing anchor) `label: "<title>"` `description: "<node_type> · on <place_title>"`, then `label: "+ New anchor"` `description: "I'll add one — type Wikipedia URLs in Concepts below"`
 
----
-
-## Branch A — Find paths (bulk)
-
-### A1. Pick a place
-
-Run:
-```bash
-cd $HOME/field-trips/path-finder && .venv/bin/python -m src.path_finder places --json
-```
-
-Parse the JSON. Call AskUserQuestion with one option per place (label = title, description = "use this place"), plus one option `label: "+ Add new place"` `description: "Type a Wikipedia URL"`.
-
-If the user picks "+ Add new place": call AskUserQuestion with one question for the URL (options: `Paste a Wikipedia URL` / `Or type a title`). Treat the typed answer as the place URL/title. There is no anchor yet on this place so skip to A2 in "new anchor" mode (the user will define an anchor below; you'll pass --place X --anchor Y).
-
-Otherwise, use the picked place's `wikipedia_url` as PLACE.
-
-### A2. Pick an anchor
-
-Run:
-```bash
-cd $HOME/field-trips/path-finder && .venv/bin/python -m src.path_finder anchor list --place "PLACE" --json
-```
-
-Parse the JSON. Call AskUserQuestion with one option per anchor (label = title, description = node_type), plus `+ Add new anchor`.
-
-If "+ Add new anchor": call AskUserQuestion for the anchor's Wikipedia URL/title (same two-option pattern). Then run:
-```bash
-cd $HOME/field-trips/path-finder && .venv/bin/python -m src.path_finder anchor add --place "PLACE" --anchor "ANCHOR_URL"
-```
-Use the new anchor's URL as ANCHOR.
-
-Otherwise, use the picked anchor's `wikipedia_url` as ANCHOR.
-
-### A3. Concepts (bulk input)
-
-Call AskUserQuestion:
-- question: "Concepts — one Wikipedia title or URL per line. Cap at 5 per batch to stay under rate limits."
-- header: "Concepts"
+Question 3:
+- question: "Concepts — one Wikipedia title or URL per line. Up to 5 per batch. (For Find paths: destinations. For Add anchors: the anchor URLs.)"
+- header: "Concepts / URLs"
 - options:
-  - label: "Enter concepts"
-    description: "One per line — e.g. Marxism, Conservation movement, American Scene painting"
-  - label: "Paste Wikipedia URLs"
-    description: "One URL per line"
+  - label: "(typed below)"
+    description: "Use Other and paste one per line — e.g. Marxism, Conservation movement"
+  - label: "(skip)"
+    description: "Only for List anchors"
 
-The user will type the concepts via "Other". Split on newlines, strip blanks. If they typed more than 5, tell them to pick 5 max and ask again.
-
-### A4. Permutations
-
-Call AskUserQuestion:
-- question: "How many paths per concept?"
-- header: "Permutations"
+Question 4:
+- question: "Paths per concept (only used for Find paths)"
+- header: "Paths"
 - options:
   - label: "1"
-    description: "Quick — one path each"
+    description: "Quick"
   - label: "3"
-    description: "Three distinct paths each"
+    description: "Thorough"
 
-### A5. Run in parallel
+## Step 3 — Run (single bash call)
 
-Build one bash command that runs every concept in parallel, each writing to its own log file. Use a single Bash call:
+Based on Q1:
+
+### Find paths
+If anchor is an existing one, use its `wikipedia_url` from preflight JSON. Place is inferred from that anchor's `place_wikipedia_url`. Then run all concepts in parallel:
 
 ```bash
 cd $HOME/field-trips/path-finder
 mkdir -p /tmp/pf-logs && rm -f /tmp/pf-logs/*.log
-PLACE="<PLACE_URL>"
-ANCHOR="<ANCHOR_URL>"
+PLACE="<place_wikipedia_url>"
+ANCHOR="<anchor_wikipedia_url>"
 PERMS=<1 or 3>
-
-# Loop through concepts (one per line in a variable):
 while IFS= read -r CONCEPT; do
   [ -z "$CONCEPT" ] && continue
   SAFE=$(echo "$CONCEPT" | tr ' /:' '___')
-  .venv/bin/python -m src.path_finder one \
-    --place   "$PLACE" \
-    --anchor  "$ANCHOR" \
-    --concept "$CONCEPT" \
-    --permutations "$PERMS" > "/tmp/pf-logs/$SAFE.log" 2>&1 &
+  .venv/bin/python -m src.path_finder one --place "$PLACE" --anchor "$ANCHOR" --concept "$CONCEPT" --permutations "$PERMS" > "/tmp/pf-logs/$SAFE.log" 2>&1 &
 done <<EOF
 <concept 1>
 <concept 2>
-<concept 3>
 EOF
-
 wait
-
-# Print results
 for log in /tmp/pf-logs/*.log; do
   CONCEPT=$(basename "$log" .log | tr '_' ' ')
   echo ""
-  echo "─── $CONCEPT ──────────────────────────────────────"
+  echo "─── $CONCEPT ──────────"
   cat "$log"
 done
 ```
 
-Print the combined output verbatim. No commentary.
-
----
-
-## Branch B — Add anchors
-
-### B1. Pick a place
-Same as A1.
-
-### B2. Anchors to add
-
-Call AskUserQuestion:
-- question: "Anchors — one Wikipedia title or URL per line"
-- header: "Anchors"
-- options:
-  - label: "Enter anchors"
-    description: "One per line — e.g. Rockwell Kent, Lobster trap, Monhegan Light"
-  - label: "Paste URLs"
-    description: "One URL per line"
-
-(Rationales are added later via terminal — bulk add is URLs only.)
-
-### B3. Run
+### Add anchors
+If the user picked "+ New anchor" or chose "Add anchors" as action, the URLs in Q3 are anchor URLs (not concepts). Default place is the first existing place (or ask in a follow-up if there are 0 or 2+).
 
 ```bash
 cd $HOME/field-trips/path-finder
-PLACE="<PLACE_URL>"
+PLACE="<place_wikipedia_url>"
 while IFS= read -r ANCHOR; do
   [ -z "$ANCHOR" ] && continue
-  .venv/bin/python -m src.path_finder anchor add \
-    --place "$PLACE" \
-    --anchor "$ANCHOR"
+  .venv/bin/python -m src.path_finder anchor add --place "$PLACE" --anchor "$ANCHOR"
 done <<EOF
 <anchor 1>
 <anchor 2>
 EOF
 ```
 
-Print output. No commentary.
-
----
-
-## Branch C — List anchors
-
-Run:
+### List anchors
 ```bash
 cd $HOME/field-trips/path-finder && .venv/bin/python -m src.path_finder anchor list
 ```
 
-Print verbatim. No commentary.
-
----
-
 ## Rules
 
-- Never analyse, summarise, or add narration. The Python script's output speaks for itself.
-- If the user wants a single concept (not bulk), the same flow works with one line of input.
-- Cap parallel concepts at 5 to stay under rate limits.
+- Maximum 3 round trips total: preflight, form, run.
+- Bundle all questions in ONE AskUserQuestion call.
+- Never analyse the output. Print it verbatim.
+- If user is missing info (e.g. picked "+ New anchor" and didn't enter URLs), ask ONE follow-up — never a string of questions.
