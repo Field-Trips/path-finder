@@ -97,6 +97,10 @@ class Path:
     hops: list[str] = field(default_factory=list)   # ordered list of node titles, start to end
     completed: bool = False
     theme: Optional[str] = None
+    representative_node_id: Optional[int] = None
+    representative_title: Optional[str] = None
+    representative_type: Optional[str] = None
+    representative_image: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -384,7 +388,54 @@ def resolve_located_in(title_or_url: str) -> int:
     return upsert_node(page)
 
 
-def insert_path(start_node_id: int, end_node_id: int, hops: list[int], theme: str, completed: bool, group: str) -> int:
+VISUAL_TYPES = {"person", "place", "thing"}
+
+
+def select_representative(node_ids: list[int], node_meta: dict) -> int:
+    """
+    Pick the representative node for a path — the person/place/thing that
+    will be visually pinned on the map.
+
+    Priority:
+      1. Start node, if it's a person/place/thing with an image (the object IS visual)
+      2. Walking backwards from place: first person/place/thing that has an image
+      3. Walking backwards from place: first person/place/thing (image not required)
+      4. Start node as final fallback
+    """
+    start_meta = node_meta.get(node_ids[0], {})
+
+    # 1. Start node is already concrete and visual
+    if start_meta.get("node_type") in VISUAL_TYPES and start_meta.get("image_url"):
+        return node_ids[0]
+
+    # Intermediate hops only (skip start and end/place)
+    middle = node_ids[1:-1]
+
+    # 2. Walk backwards: person/place/thing with image (closest pivot to the place)
+    for nid in reversed(middle):
+        meta = node_meta.get(nid, {})
+        if meta.get("node_type") in VISUAL_TYPES and meta.get("image_url"):
+            return nid
+
+    # 3. Walk backwards: person/place/thing without image requirement
+    for nid in reversed(middle):
+        meta = node_meta.get(nid, {})
+        if meta.get("node_type") in VISUAL_TYPES:
+            return nid
+
+    # 4. Final fallback
+    return node_ids[0]
+
+
+def insert_path(
+    start_node_id: int,
+    end_node_id: int,
+    hops: list[int],
+    theme: str,
+    completed: bool,
+    group: str,
+    representative_node_id: Optional[int] = None,
+) -> int:
     """
     Insert a path row and its edges.
 
@@ -399,6 +450,7 @@ def insert_path(start_node_id: int, end_node_id: int, hops: list[int], theme: st
         "theme": theme or None,
         "completed": completed,
         "permutation_group": group,
+        "representative_node_id": representative_node_id,
     }).execute()
     path_id = path_result.data[0]["id"]
 
@@ -497,7 +549,18 @@ def run_scenario(
                 nid = upsert_node(page)
             node_ids.append(nid)
 
-        insert_path(node_ids[0], node_ids[-1], node_ids, path.theme or "", path.completed, group)
+        # Fetch node metadata (type + image) to select representative
+        node_rows = sb.table("nodes").select("id,title,node_type,image_url").in_("id", node_ids).execute().data
+        node_meta = {row["id"]: row for row in node_rows}
+
+        rep_id = select_representative(node_ids, node_meta)
+        rep = node_meta.get(rep_id, {})
+        path.representative_node_id = rep_id
+        path.representative_title = rep.get("title")
+        path.representative_type = rep.get("node_type")
+        path.representative_image = rep.get("image_url")
+
+        insert_path(node_ids[0], node_ids[-1], node_ids, path.theme or "", path.completed, group, rep_id)
 
     return results
 
@@ -523,6 +586,9 @@ def one(start: str, place: str, permutations: int, max_hops: int):
         status = "✓" if p.completed else "× (hop cap)"
         print(f"\n[{i}] {status}  {p.theme or ''}")
         print("    " + " → ".join(p.hops))
+        if p.representative_title:
+            has_img = "  · has image" if p.representative_image else "  · no image"
+            print(f"    📍 Representative: {p.representative_title}  ({p.representative_type}{has_img})")
 
 
 @cli.command()
