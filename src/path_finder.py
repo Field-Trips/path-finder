@@ -342,6 +342,7 @@ def pick_next_hop(
     visited: list[str],
     forbidden: set[str],
     prefer_direct: bool = False,
+    place_context: Optional[str] = None,
 ) -> str:
     """
     Ask Claude to pick the next page title from `current.links`.
@@ -366,9 +367,17 @@ def pick_next_hop(
         "predictable one (favor surprising links that still get there),"
     )
 
+    place_hint = (
+        f"\nNote: both '{current.title}' and '{target_title}' are anchored to "
+        f"the same place: '{place_context}'. The natural route between them "
+        "likely passes through articles about that shared place. Prefer hops "
+        "that go through the place context where plausible."
+        if place_context else ""
+    )
+
     def _ask(candidate_list: list[str]) -> str:
         prompt = f"""You are walking the Wikipedia link graph from "{current.title}" toward "{target_title}".
-
+{place_hint}
 You've already visited: {visited}
 Avoid (used by other permutations): {sorted(forbidden)}
 
@@ -419,7 +428,7 @@ Reply with ONLY the single word."""
     return out if out in NODE_TYPES else "thing"
 
 
-def summarize_theme(path_titles: list[str]) -> tuple[str, str]:
+def summarize_theme(path_titles: list[str], branch_via: Optional[str] = None) -> tuple[str, str]:
     """
     Returns (theme, narrative) for a completed path.
 
@@ -427,42 +436,62 @@ def summarize_theme(path_titles: list[str]) -> tuple[str, str]:
     `narrative` — a 2–3 paragraph explanation in the voice of James Burke or
                   Adam Curtis: names specific mechanisms, people, technologies,
                   or ideologies. Concrete, not abstract.
+
+    `branch_via` — if set, the path passed through this branch anchor. The
+                   narrative should acknowledge the bridge through that object.
     """
     path_str = " → ".join(path_titles)
+    branch_note = (
+        f"\n\nNote: this is a BRANCHED path. It travels through '{branch_via}' "
+        f"as a bridge object — meaning the connection from the start to the end "
+        f"is not direct, but goes through this other curated object on the same "
+        f"place. The narrative should acknowledge that bridging move."
+        if branch_via else ""
+    )
 
     # Single Claude call for both, returned as JSON so we can split them cleanly.
     prompt = f"""You are connecting the dots between Wikipedia articles in the combined voices of JAMES BURKE (Connections) and ADAM CURTIS. Match their voice and their habit of thought.
 
 BURKE traces material and technological chains. He shows how the stirrup made heavy cavalry possible, which required vast estates to maintain knights, which created universities to administer the estates. The voice is plain, the leaps are surprising, the rigor is in the specificity.
 
-CURTIS traces ideological and systemic chains. In Pandora's Box he showed how postwar faith in rational, scientific solutions consistently produced unintended disasters — Soviet cybernetics that made trains run pointlessly to meet tonnage quotas, monetarism that produced mass unemployment, DDT that magnified up the food chain. In HyperNormalisation he traced how power and finance retreated from real complexity after the 1975 NYC fiscal crisis and built a simpler "fake world" — Reagan blaming Gaddafi for terrorism actually run by Syria, John Perry Barlow's cyberspace utopianism delivering more corporate control than governments ever had, Occupy enriching the platforms that hosted its dissent. Curtis names specific people as the conduits — George Shultz, Constance Garnett, Rachel Carson, Henry Kissinger — and identifies the hidden mechanism: what the experts ignored, the feedback they didn't account for, the ideology that mutated into its opposite.
+CURTIS works in plain declarative sentences and stacks them until they land. His method, drawn from his actual blog posts:
 
-His characteristic moves:
-- Cross-domain leaps (1960s LSD → 1990s cyberspace utopianism via John Perry Barlow)
-- The unintended consequence that becomes the dominant feature
-- Ideologies betraying their origins
-- Specific people as conduits between worlds that don't seem to touch
-- A quietly devastating final observation, never melodrama
+He goes BEHIND a known headline to reveal the hidden back story. "BP is accused of destroying the wildlife and coastline of America, but if you look back into history you find that BP did something even worse to America. They gave the world Ayatollah Khomeini." The punchline lands as a flat fact.
+
+He names specific people as conduits and stacks their biographies. "He set up a motorcycle task force to smash the mafia in America in the 1930s. Then he narrated the radio series Gang Busters. And he ended up helping create and train the Shah's notorious secret police - the SAVAK." Each clause is matter-of-fact. The cumulative effect is damning.
+
+He makes the small detail specific and physical. A "fly-blown hell, a shanty town called Kaghazabad, or Paper City." Executive role-playing games "played in an old country mansion - using staplers." Four eminent archaeologists arriving "together in a 1970s car at Monsieur Fradin's farmhouse - all determined to destroy him (in their pompous archaeological way)."
+
+He ends quietly, on a sentence that lands but does not moralize. "And now the only person who knows the truth has died." "And maybe to the inept and arrogant response to the crisis in America today."
+
+He uses "And what's more" / "But the price was high" to stack consequences.
+
+His other moves:
+- Hidden causal chains across long time spans (a 1951 coup → a 1979 revolution).
+- Ideologies that betray their origins.
+- The bumbling, post-imperial arrogance of institutions doing more damage than their headline crimes.
+- Light irony, never sneering — affection for the strange characters even as the system is damned.
 
 Here is a Wikipedia path:
 
-{path_str}
+{path_str}{branch_note}
 
 Produce TWO things in JSON:
 
 1. theme — a 6-12 word chapter title naming the connecting MECHANISM (not the topic). Examples:
-   - "via the financial instruments that funded the war"
-   - "the rational solutions that produced their opposite"
+   - "the oil company that gave the world Ayatollah Khomeini"
    - "by the academics who would later defect"
-   - "tracing how mysticism shaped political dissent in pre-revolutionary Russia"
+   - "how mysticism shaped political dissent in pre-revolutionary Russia"
+   - "the rational solutions that produced their opposite"
 
-2. narrative — 2-3 short paragraphs (~150-250 words total). Tell the story of how the start actually leads to the end through THIS specific route. Use specifics: name the people, dates, inventions, ideas, places. Make at least one observation that is non-obvious — a hidden chain or unintended consequence. End on a sentence that lands. Do not trail off.
+2. narrative — 2-3 short paragraphs (~150-250 words total). Tell the story of how the start actually leads to the end through THIS specific route. Use specifics: name the people, the dates, the institutions. Make at least one observation that is non-obvious — a hidden chain, a stacked biographical detail, an unintended consequence. End on a sentence that lands. Do not trail off.
 
 Voice rules:
-- Plain past tense. No "fascinating," "intriguing," rhetorical questions, or rhetorical flourish.
-- Matter-of-fact, building toward a quietly devastating point.
-- Concrete over abstract. Specific names, dates, mechanisms over generalities.
+- Plain past tense. Short declarative sentences. No "fascinating," "intriguing," rhetorical questions, or rhetorical flourish.
+- Stack matter-of-fact clauses; let the cumulative effect do the work.
+- Concrete over abstract. Specific names, dates, places, small physical details.
 - Do not say "this path shows" or "this connection reveals" — just tell the story.
+- Light irony is fine; sneering is not.
 
 Reply with ONLY JSON, no preamble, no markdown fences:
 {{"theme": "...", "narrative": "..."}}"""
@@ -610,11 +639,14 @@ def insert_path(
     group: str,
     anchor_id: Optional[int] = None,
     narrative: Optional[str] = None,
+    branch_anchor_id: Optional[int] = None,
 ) -> int:
     """
     Insert a path row and its edges.
 
-    `hops` is the ordered list of node ids: [place, ..., anchor, ..., concept].
+    `hops` is the ordered list of node ids:
+      direct:   [place, ..., anchor, ..., concept]
+      branched: [place, ..., anchor, ..., branch_anchor, ..., concept]
     `total_hops` = number of edges = len(hops) - 1.
     """
     path_result = sb.table("paths").insert({
@@ -626,6 +658,7 @@ def insert_path(
         "completed": completed,
         "permutation_group": group,
         "anchor_id": anchor_id,
+        "branch_anchor_id": branch_anchor_id,
     }).execute()
     path_id = path_result.data[0]["id"]
 
@@ -648,7 +681,7 @@ def insert_path(
 # Main loop
 # ---------------------------------------------------------------------------
 
-def find_path(start: str, end: str, forbidden: set[str], max_hops: int = MAX_HOPS, prefer_direct: bool = False) -> Path:
+def find_path(start: str, end: str, forbidden: set[str], max_hops: int = MAX_HOPS, prefer_direct: bool = False, place_context: Optional[str] = None) -> Path:
     """
     Walk from `start` to `end` one hop at a time, up to max_hops.
     `forbidden` is intermediate titles to avoid (for diversity across permutations).
@@ -671,6 +704,7 @@ def find_path(start: str, end: str, forbidden: set[str], max_hops: int = MAX_HOP
             visited=visited,
             forbidden=forbidden,
             prefer_direct=prefer_direct,
+            place_context=place_context,
         )
 
         # If Claude picked the end directly, we're done — don't re-fetch.
@@ -795,6 +829,115 @@ def run_scenario(
     return results
 
 
+def run_branched_scenario(
+    place: str,
+    anchor: str,
+    branch_anchor: str,
+    concept: str,
+    permutations: int = 1,
+    bridge_hops: int = 8,
+    stage2_hops: int = STAGE2_HOPS,
+    allow_duplicates: bool = False,
+) -> list[Path]:
+    """
+    Branched pathfinding: Place → Anchor → BranchAnchor → Concept.
+
+    Stage 1: Place → Anchor (4 hops, existing logic)
+    Stage A: Anchor → BranchAnchor (place-informed, default 8 hops)
+    Stage B: BranchAnchor → Concept (fresh pathfinding, default 15 hops)
+
+    Both anchors are assumed to be on the same place.
+    """
+    forbidden: set[str] = set()
+    results: list[Path] = []
+    group = f"{normalize_title(place)}__{normalize_title(anchor)}__via_{normalize_title(branch_anchor)}__{normalize_title(concept)}"
+
+    print(f"  Resolving place:         {place!r} …")
+    place_node_id, place_page = resolve_node(place)
+    print(f"  Resolving anchor:        {anchor!r} …")
+    anchor_node_id, anchor_page = resolve_node(anchor)
+    print(f"  Resolving branch anchor: {branch_anchor!r} …")
+    branch_node_id, branch_page = resolve_node(branch_anchor)
+    print(f"  Resolving concept:       {concept!r} …")
+    concept_node_id, concept_page = resolve_node(concept)
+
+    # Ensure both anchor rows exist on this place
+    anchor_row = add_anchor(anchor_page.url, place_page.url)
+    branch_row = add_anchor(branch_page.url, place_page.url)
+    anchor_id = anchor_row["id"]
+    branch_anchor_id = branch_row["id"]
+
+    # Duplicate check — skip if a completed branched path with this exact triple
+    # (anchor, branch, concept) already exists.
+    if not allow_duplicates:
+        existing = (
+            sb.table("paths").select("id")
+            .eq("anchor_id", anchor_id)
+            .eq("branch_anchor_id", branch_anchor_id)
+            .eq("concept_node_id", concept_node_id)
+            .eq("completed", True)
+            .execute()
+        )
+        if existing.data:
+            ids = ", ".join(f"#{p['id']}" for p in existing.data)
+            print(f"\n  ⚠  Skipping: branched path already exists via {branch_page.title} ({ids})\n")
+            return []
+
+    for i in range(permutations):
+        prefer_direct = (i == 0)
+        bias_label = "direct" if prefer_direct else "non-obvious"
+        print(f"\n  → Permutation {i + 1}/{permutations}  ({bias_label}, branched)")
+
+        print(f"    Stage 1: {place_page.title} → {anchor_page.title}")
+        stage1 = find_path(place_page.title, anchor_page.title, forbidden=forbidden, max_hops=STAGE1_HOPS, prefer_direct=prefer_direct)
+
+        print(f"    Stage A: {anchor_page.title} → {branch_page.title}  (via {place_page.title})")
+        stage_a = find_path(anchor_page.title, branch_page.title, forbidden=forbidden, max_hops=bridge_hops, prefer_direct=prefer_direct, place_context=place_page.title)
+
+        print(f"    Stage B: {branch_page.title} → {concept_page.title}")
+        stage_b = find_path(branch_page.title, concept_page.title, forbidden=forbidden, max_hops=stage2_hops, prefer_direct=prefer_direct)
+
+        combined_hops = stage1.hops + stage_a.hops[1:] + stage_b.hops[1:]
+        completed = stage1.completed and stage_a.completed and stage_b.completed
+
+        path = Path(
+            start_title=place_page.title,
+            end_title=concept_page.title,
+            hops=combined_hops,
+            completed=completed,
+        )
+        results.append(path)
+
+        if not completed:
+            failing_stage = "1" if not stage1.completed else ("A" if not stage_a.completed else "B")
+            print(f"    ↳ Hit hop cap on stage {failing_stage}. Not saved.")
+            continue
+
+        forbidden.update(combined_hops[1:-1])
+        theme, narrative = summarize_theme(combined_hops, branch_via=branch_page.title)
+        path.theme = theme
+        path.narrative = narrative
+
+        node_ids: list[int] = []
+        for title in combined_hops:
+            page = fetch_wiki_page(title)
+            node_ids.append(upsert_node(page))
+
+        insert_path(
+            place_node_id=place_node_id,
+            concept_node_id=concept_node_id,
+            hops=node_ids,
+            theme=path.theme or "",
+            narrative=path.narrative,
+            completed=path.completed,
+            group=group,
+            anchor_id=anchor_id,
+            branch_anchor_id=branch_anchor_id,
+        )
+
+    return results
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -826,7 +969,33 @@ def one(place: str, anchor: str, concept: str, permutations: int, stage1_hops: i
         print("    " + " → ".join(p.hops))
         if p.narrative:
             print()
-            # Indent narrative lines so it reads as a block
+            for line in p.narrative.split("\n"):
+                print(f"    {line}")
+
+
+@cli.command("branched")
+@click.option("--place",         required=True, help="Wikipedia title or URL of the Place.")
+@click.option("--anchor",        required=True, help="Wikipedia title or URL of the primary Anchor.")
+@click.option("--branch-anchor", required=True, help="Wikipedia title or URL of the Branch Anchor (an existing anchor on the same place).")
+@click.option("--concept",       required=True, help="Wikipedia title or URL of the Concept.")
+@click.option("--permutations",  default=1, type=int)
+@click.option("--bridge-hops",   default=8,  type=int, help="Max hops for Anchor → BranchAnchor (place-informed).")
+@click.option("--stage2-hops",   default=STAGE2_HOPS, type=int, help="Max hops for BranchAnchor → Concept.")
+@click.option("--allow-duplicates", is_flag=True, default=False)
+def branched(place: str, anchor: str, branch_anchor: str, concept: str,
+             permutations: int, bridge_hops: int, stage2_hops: int, allow_duplicates: bool):
+    """Find branched paths: Place → Anchor → BranchAnchor → Concept."""
+    paths = run_branched_scenario(
+        place=place, anchor=anchor, branch_anchor=branch_anchor, concept=concept,
+        permutations=permutations, bridge_hops=bridge_hops, stage2_hops=stage2_hops,
+        allow_duplicates=allow_duplicates,
+    )
+    for i, p in enumerate(paths, 1):
+        status = "✓" if p.completed else "× (hop cap)"
+        print(f"\n[{i}] {status}  {p.theme or ''}")
+        print("    " + " → ".join(p.hops))
+        if p.narrative:
+            print()
             for line in p.narrative.split("\n"):
                 print(f"    {line}")
 

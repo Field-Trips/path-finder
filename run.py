@@ -438,11 +438,37 @@ def offer_retry_failed(anchor_url: str, concepts: list[tuple[str, str]], perms: 
         for i, (t, _) in enumerate(failed, 1):
             print(f"    {cyan(str(i))}  {t}")
         print(f"    {cyan('a')}  Retry all with more hops")
+        print(f"    {cyan('b')}  Find a branch through another anchor")
         print(f"    {cyan('n')}  Skip retry")
 
         choice = ask("Choice", "n").lower()
         if choice in ("n", "no", ""):
             return
+
+        if choice == "b":
+            # Branch sub-flow: pick which failed concept to branch, then which anchor to branch through
+            if len(failed) == 1:
+                target = failed[0]
+            else:
+                print(f"\n  {bold('Which concept do you want to branch?')}")
+                for i, (t, _) in enumerate(failed, 1):
+                    print(f"    {cyan(str(i))}  {t}")
+                sub = ask("Choice", "1").lower()
+                try:
+                    idx = int(sub) - 1
+                    if 0 <= idx < len(failed):
+                        target = failed[idx]
+                    else:
+                        print(f"  {yellow('Invalid choice.')}\n")
+                        continue
+                except ValueError:
+                    print(f"  {yellow('Invalid choice.')}\n")
+                    continue
+
+            target_title, target_url = target
+            run_branch_for_concept(anchor_url, target_title, target_url, perms)
+            current_pool = [target]  # loop will re-check this concept next iteration
+            continue
 
         if choice == "a":
             retry_list = list(failed)
@@ -478,6 +504,84 @@ def offer_retry_failed(anchor_url: str, concepts: list[tuple[str, str]], perms: 
         # Loop: next pass only checks the retry list. If any still incomplete,
         # we offer another round with an even bigger cap.
         current_pool = retry_list
+
+
+def run_branch_for_concept(anchor_url: str, concept_title: str, concept_url: str, perms: int) -> None:
+    """Branch sub-flow: try alternate anchors on the same place as bridges
+    to reach a stubborn concept. Loops until success, exhaustion, or skip."""
+    place_url = _place_for_anchor(anchor_url)
+    place_title = _place_title_for_url(place_url)
+    tried: set[str] = set()  # branch-anchor URLs we've already attempted this round
+
+    while True:
+        candidates = _other_anchors_on_place(place_url, anchor_url, tried)
+
+        # Build menu
+        header = f"Branch through which anchor on {place_title}?"
+        print(f"\n  {bold(header)}")
+        for i, a in enumerate(candidates, 1):
+            node_type = a.get("node_type") or "?"
+            print(f"    {cyan(str(i))}  {a['title']}  {dim('(' + node_type + ')')}")
+        print(f"    {cyan('n')}  + Add a new anchor and try with that")
+        print(f"    {cyan('s')}  Stop trying to branch")
+
+        sub = ask("Choice", "s").lower()
+        if sub in ("s", "stop", ""):
+            print("  Stopping branch attempts.\n")
+            return
+
+        if sub == "n":
+            new_a = inline_add_anchor(prefilled_place_url=place_url, prefilled_place_title=place_title)
+            if not new_a or not new_a.get("wikipedia_url"):
+                continue
+            branch_url = new_a["wikipedia_url"]
+            branch_title = new_a.get("title") or branch_url
+        else:
+            try:
+                idx = int(sub) - 1
+                if not (0 <= idx < len(candidates)):
+                    print(f"  {yellow('Invalid choice.')}\n")
+                    continue
+                branch_url = candidates[idx]["wikipedia_url"]
+                branch_title = candidates[idx]["title"]
+            except ValueError:
+                print(f"  {yellow('Invalid choice.')}\n")
+                continue
+
+        tried.add(branch_url)
+        print(f"\n  {dim('Branching:')} {bold(concept_title)} {dim(f'via {branch_title}')}")
+        cmd = [_venv_python(), "-m", "src.path_finder", "branched",
+               "--place",         place_url,
+               "--anchor",        anchor_url,
+               "--branch-anchor", branch_url,
+               "--concept",       concept_url,
+               "--permutations",  str(perms)]
+        subprocess.run(cmd, cwd=SCRIPT_DIR)
+
+        # Check whether the concept now has a completed path
+        if _concept_completed_count(anchor_url, concept_url) > 0:
+            print(f"\n  {green('✓')} {bold(concept_title)} {green('reached via branch.')}\n")
+            return
+
+        print(f"\n  {yellow('Still no completed path. Try another branch?')}")
+
+
+def _other_anchors_on_place(place_url: str, exclude_anchor_url: str, exclude_extra: set[str]) -> list[dict]:
+    """Return anchors on the given place, excluding the primary anchor and any
+    branch anchors we've already tried this round."""
+    rows = fetch_anchors(place_url)
+    return [
+        a for a in rows
+        if a.get("wikipedia_url") != exclude_anchor_url
+        and a.get("wikipedia_url") not in exclude_extra
+    ]
+
+
+def _place_title_for_url(place_url: str) -> str:
+    for p in fetch_places():
+        if p.get("wikipedia_url") == place_url:
+            return p.get("title", "")
+    return ""
 
 
 def _concept_completed_count(anchor_url: str, concept_url: str) -> int:
