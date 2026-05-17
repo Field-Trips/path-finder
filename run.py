@@ -527,7 +527,7 @@ def offer_retry_failed(anchor_url: str, concepts: list[tuple[str, str]], perms: 
         for i, (t, _) in enumerate(failed, 1):
             print(f"    {cyan(str(i))}  {t}")
         print(f"    {cyan('a')}  Retry all with more hops")
-        print(f"    {cyan('b')}  Find a branch through another anchor")
+        print(f"    {cyan('b')}  Try an indirect path  {dim('(branch through another anchor — pick existing or add new inline)')}")
         print(f"    {cyan('n')}  Skip retry")
 
         choice = ask("Choice", "n").lower()
@@ -606,12 +606,15 @@ def run_branch_for_concept(anchor_url: str, concept_title: str, concept_url: str
         candidates = _other_anchors_on_place(place_url, anchor_url, tried)
 
         # Build menu
-        header = f"Branch through which anchor on {place_title}?"
+        header = f"Try the indirect path through which branch anchor on {place_title}?"
         print(f"\n  {bold(header)}")
-        for i, a in enumerate(candidates, 1):
-            node_type = a.get("node_type") or "?"
-            print(f"    {cyan(str(i))}  {a['title']}  {dim('(' + node_type + ')')}")
-        print(f"    {cyan('n')}  + Add a new anchor and try with that")
+        if candidates:
+            for i, a in enumerate(candidates, 1):
+                node_type = a.get("node_type") or "?"
+                print(f"    {cyan(str(i))}  {a['title']}  {dim('(' + node_type + ')')}")
+        else:
+            print(f"    {dim('(no other anchors on this place yet)')}")
+        print(f"    {cyan('n')}  + Add a new anchor and use it as the branch")
         print(f"    {cyan('s')}  Stop trying to branch")
 
         sub = ask("Choice", "s").lower()
