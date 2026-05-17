@@ -562,6 +562,7 @@ def run_scenario(
     permutations: int = DEFAULT_PERMUTATIONS,
     stage1_hops: int = STAGE1_HOPS,
     stage2_hops: int = STAGE2_HOPS,
+    allow_duplicates: bool = False,
 ) -> list[Path]:
     """
     Produce `permutations` distinct paths from Place → Anchor → Concept.
@@ -569,6 +570,9 @@ def run_scenario(
     Two-stage pathfinding:
       Stage 1: Place → Anchor  (tight, default 4 hops)
       Stage 2: Anchor → Concept (broad, default 15 hops)
+
+    Skips with a warning if a path from this anchor to this concept already
+    exists in the database, unless allow_duplicates=True.
     """
     forbidden: set[str] = set()
     results: list[Path] = []
@@ -584,6 +588,17 @@ def run_scenario(
     # Ensure anchor row exists (auto-create if needed).
     anchor_row = add_anchor(anchor_page.url, place_page.url)
     anchor_id = anchor_row["id"]
+
+    # Duplicate check — if this anchor → concept already has any paths, skip.
+    if not allow_duplicates:
+        existing = sb.table("paths").select("id,total_hops,completed").eq("anchor_id", anchor_id).eq("concept_node_id", concept_node_id).execute()
+        if existing.data:
+            count = len(existing.data)
+            ids = ", ".join(f"#{p['id']}" for p in existing.data)
+            print(f"\n  ⚠  Skipping: {count} existing path(s) already connect")
+            print(f"     {anchor_page.title} → {concept_page.title}  ({ids})")
+            print(f"     Pass --allow-duplicates to run anyway.\n")
+            return []
 
     for i in range(permutations):
         print(f"\n  → Permutation {i + 1}/{permutations}")
@@ -643,12 +658,14 @@ def cli():
 @click.option("--permutations", default=DEFAULT_PERMUTATIONS, type=int)
 @click.option("--stage1-hops", default=STAGE1_HOPS, type=int, help="Max hops for Place → Anchor.")
 @click.option("--stage2-hops", default=STAGE2_HOPS, type=int, help="Max hops for Anchor → Concept.")
-def one(place: str, anchor: str, concept: str, permutations: int, stage1_hops: int, stage2_hops: int):
+@click.option("--allow-duplicates", is_flag=True, default=False, help="Run even if a path from this anchor to this concept already exists.")
+def one(place: str, anchor: str, concept: str, permutations: int, stage1_hops: int, stage2_hops: int, allow_duplicates: bool):
     """Find paths: Place → Anchor → Concept."""
     paths = run_scenario(
         place=place, anchor=anchor, concept=concept,
         permutations=permutations,
         stage1_hops=stage1_hops, stage2_hops=stage2_hops,
+        allow_duplicates=allow_duplicates,
     )
     for i, p in enumerate(paths, 1):
         status = "✓" if p.completed else "× (hop cap)"
@@ -719,7 +736,8 @@ def anchor_remove(anchor_id: int):
 @click.option("--anchor",  required=True, help="Wikipedia title or URL of the Anchor.")
 @click.option("--concepts", required=True, help="Comma-separated list of concept titles/URLs (cap at 5).")
 @click.option("--permutations", default=1, type=int)
-def batch_cmd(place: str, anchor: str, concepts: str, permutations: int):
+@click.option("--allow-duplicates", is_flag=True, default=False, help="Run even if a path already exists for a given concept.")
+def batch_cmd(place: str, anchor: str, concepts: str, permutations: int, allow_duplicates: bool):
     """Run several concepts in parallel from one anchor. Cap at 5 to stay under rate limits."""
     import subprocess
     import threading
@@ -736,12 +754,12 @@ def batch_cmd(place: str, anchor: str, concepts: str, permutations: int):
     logs: dict[str, str] = {}
 
     def _run(concept: str):
-        proc = subprocess.run(
-            [sys.executable, "-m", "src.path_finder", "one",
-             "--place", place, "--anchor", anchor, "--concept", concept,
-             "--permutations", str(permutations)],
-            capture_output=True, text=True,
-        )
+        cmd = [sys.executable, "-m", "src.path_finder", "one",
+               "--place", place, "--anchor", anchor, "--concept", concept,
+               "--permutations", str(permutations)]
+        if allow_duplicates:
+            cmd.append("--allow-duplicates")
+        proc = subprocess.run(cmd, capture_output=True, text=True)
         logs[concept] = (proc.stdout or "") + (proc.stderr or "")
 
     import sys

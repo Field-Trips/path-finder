@@ -250,11 +250,7 @@ def action_add_anchor():
 
 def action_list_anchors():
     print(f"\n  {bold('Anchors')}\n")
-    place_title, place_url = pick_place_or_all()
     cmd = [_venv_python(), "-m", "src.path_finder", "anchor", "list"]
-    if place_url:
-        cmd += ["--place", place_url]
-    print()
     subprocess.run(cmd, cwd=SCRIPT_DIR)
     print()
 
