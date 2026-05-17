@@ -674,9 +674,25 @@ def anchor_add(place: str, anchor_url: str, rationale: Optional[str], image: Opt
 
 @anchor.command("list")
 @click.option("--place", default=None, help="Filter to a specific place (Wikipedia title or URL).")
-def anchor_list(place: Optional[str]):
+@click.option("--json", "json_output", is_flag=True, default=False, help="Output as JSON (for widgets/scripts).")
+def anchor_list(place: Optional[str], json_output: bool):
     """List all anchors (optionally filtered by place)."""
     rows = list_anchors(place)
+    if json_output:
+        slim = [
+            {
+                "id": r["id"],
+                "title": (r.get("node") or {}).get("title"),
+                "wikipedia_url": (r.get("node") or {}).get("wikipedia_url"),
+                "node_type": (r.get("node") or {}).get("node_type"),
+                "place_title": (r.get("place") or {}).get("title"),
+                "place_wikipedia_url": (r.get("place") or {}).get("wikipedia_url"),
+                "rationale": r.get("rationale"),
+            }
+            for r in rows
+        ]
+        print(json.dumps(slim))
+        return
     if not rows:
         print("No anchors yet.")
         return
@@ -696,6 +712,30 @@ def anchor_remove(anchor_id: int):
     """Delete an anchor by id."""
     delete_anchor(anchor_id)
     print(f"✓ Anchor #{anchor_id} removed.")
+
+
+@cli.command("places")
+@click.option("--json", "json_output", is_flag=True, default=False)
+def places_cmd(json_output: bool):
+    """List distinct places that have at least one anchor."""
+    rows = sb.table("anchors").select(
+        "place:nodes!anchors_place_node_id_fkey(id,title,wikipedia_url)"
+    ).execute().data
+    seen = set()
+    unique = []
+    for a in rows:
+        p = a.get("place") or {}
+        if p.get("id") and p["id"] not in seen:
+            seen.add(p["id"])
+            unique.append(p)
+    if json_output:
+        print(json.dumps(unique))
+        return
+    if not unique:
+        print("No places with anchors yet.")
+        return
+    for p in unique:
+        print(f"  [{p['id']}] {p['title']}")
 
 
 if __name__ == "__main__":
