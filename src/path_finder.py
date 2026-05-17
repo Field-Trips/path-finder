@@ -97,6 +97,7 @@ class Path:
     hops: list[str] = field(default_factory=list)   # ordered list of node titles, start to end
     completed: bool = False
     theme: Optional[str] = None
+    narrative: Optional[str] = None
     representative_node_id: Optional[int] = None
     representative_title: Optional[str] = None
     representative_type: Optional[str] = None
@@ -385,23 +386,58 @@ Reply with ONLY the single word."""
     return out if out in NODE_TYPES else "thing"
 
 
-def summarize_theme(path_titles: list[str]) -> str:
-    """One-line label for a completed path, e.g. 'via wildlife management'. ~6 words."""
-    prompt = f"""Given this Wikipedia rabbit-hole path:
-{" → ".join(path_titles)}
+def summarize_theme(path_titles: list[str]) -> tuple[str, str]:
+    """
+    Returns (theme, narrative) for a completed path.
 
-In 6 words or fewer, summarize what THEME connects the start to the end. Examples:
-- "via American transcendentalism"
-- "through colonial maritime trade"
-- "by way of ecological restoration"
+    `theme` — a short 6–12 word phrase tagging the connection (for compact display).
+    `narrative` — a 2–3 paragraph explanation in the voice of James Burke or
+                  Adam Curtis: names specific mechanisms, people, technologies,
+                  or ideologies. Concrete, not abstract.
+    """
+    path_str = " → ".join(path_titles)
 
-Reply with ONLY the phrase, no quotes."""
+    # Single Claude call for both, returned as JSON so we can split them cleanly.
+    prompt = f"""You are connecting the dots between Wikipedia articles in the voice of James Burke (Connections) and Adam Curtis. Their gift: naming the SPECIFIC mechanism — a technology, a financial instrument, a translator, a friendship, an ideology that mutated — that actually links two seemingly distant things. They favour the concrete over the abstract, the surprising-but-rigorous over the obvious.
+
+Here is a path of Wikipedia articles, start to end:
+
+{path_str}
+
+Produce TWO things:
+
+1. A short "theme" — 6 to 12 words, like a chapter title. Name the connecting mechanism, not a topic. Examples of the voice:
+   - "via the financial instruments that funded the war"
+   - "tracing how mysticism shaped political dissent in pre-revolutionary Russia"
+   - "through the technologies of mass production that art tried to resist"
+   - "by the artists who would later sell out"
+
+2. A "narrative" — 2 to 3 short paragraphs, ~120-220 words total. Tell the story of how the start actually leads to the end through this specific route. Use specifics: name the people, the dates, the inventions, the ideas. Make at least one observation that is not obvious — a hidden chain or unintended consequence. End the narrative on a note that lands; do not trail off.
+
+Write in plain, unornamented prose. No "fascinating," no "intriguing," no rhetorical questions. Past tense.
+
+Reply with ONLY this JSON, no preamble, no markdown fences:
+{{"theme": "...", "narrative": "..."}}"""
+
     msg = claude_create(
         model=CLAUDE_MODEL,
-        max_tokens=40,
+        max_tokens=600,
         messages=[{"role": "user", "content": prompt}],
     )
-    return msg.content[0].text.strip()
+    raw = msg.content[0].text.strip()
+
+    # Strip markdown fences if Claude included them despite instructions.
+    if raw.startswith("```"):
+        raw = raw.strip("`").lstrip("json").strip()
+
+    try:
+        data = json.loads(raw)
+        theme = (data.get("theme") or "").strip()
+        narrative = (data.get("narrative") or "").strip()
+        return theme, narrative
+    except Exception:
+        # Fallback: return the raw text as both, so we lose nothing.
+        return raw[:80], raw
 
 
 # ---------------------------------------------------------------------------
@@ -525,6 +561,7 @@ def insert_path(
     completed: bool,
     group: str,
     anchor_id: Optional[int] = None,
+    narrative: Optional[str] = None,
 ) -> int:
     """
     Insert a path row and its edges.
@@ -537,6 +574,7 @@ def insert_path(
         "concept_node_id": concept_node_id,
         "total_hops": len(hops) - 1,
         "theme": theme or None,
+        "narrative": narrative or None,
         "completed": completed,
         "permutation_group": group,
         "anchor_id": anchor_id,
@@ -673,7 +711,9 @@ def run_scenario(
         )
         if completed:
             forbidden.update(combined_hops[1:-1])
-            path.theme = summarize_theme(combined_hops)
+            theme, narrative = summarize_theme(combined_hops)
+            path.theme = theme
+            path.narrative = narrative
         results.append(path)
 
         # Persist nodes
@@ -690,6 +730,7 @@ def run_scenario(
             concept_node_id=concept_node_id,
             hops=node_ids,
             theme=path.theme or "",
+            narrative=path.narrative,
             completed=path.completed,
             group=group,
             anchor_id=anchor_id,
@@ -727,6 +768,11 @@ def one(place: str, anchor: str, concept: str, permutations: int, stage1_hops: i
         status = "✓" if p.completed else "× (hop cap)"
         print(f"\n[{i}] {status}  {p.theme or ''}")
         print("    " + " → ".join(p.hops))
+        if p.narrative:
+            print()
+            # Indent narrative lines so it reads as a block
+            for line in p.narrative.split("\n"):
+                print(f"    {line}")
 
 
 @cli.group()
