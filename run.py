@@ -295,18 +295,23 @@ def action_view_summary():
 
 
 def ask_concepts() -> list[tuple[str, str]]:
-    """Collect 1-5 concepts as a comma-separated list. Each is validated against Wikipedia.
-    Tip: paste URLs to avoid commas-in-titles issues. Returns list of (title, url) tuples."""
+    """Collect 1-5 concepts as a comma-separated list. Each item can be a
+    NUMBER (matching the existing-concepts list shown), a Wikipedia URL, or
+    a title. All are validated against Wikipedia. Returns list of (title, url)
+    tuples."""
     print(f"\n  {bold('Concepts')}")
-    print(f"  {dim('Comma-separated. Max 5. Paste Wikipedia URLs for precision.')}")
-    print(f"  {dim('Example: https://en.wikipedia.org/wiki/Marxism, https://en.wikipedia.org/wiki/Anthroposophy')}")
+    print(f"  {dim('Comma-separated. Max 5. Mix numbers, URLs, or titles freely.')}")
 
     existing = fetch_concepts()
     if existing:
         print()
-        print(f"  {dim('Concepts already in the collection (so you can reuse or avoid duplicates):')}")
-        for c in existing:
-            print(f"    {dim('·')} {c.get('title')}")
+        print(f"  {dim('Concepts already in the collection (pick by number to reuse):')}")
+        for i, c in enumerate(existing, 1):
+            print(f"    {cyan(str(i))}  {c.get('title')}")
+        print()
+        print(f"  {dim('Example: 1, 3, https://en.wikipedia.org/wiki/Marxism, Anthroposophy')}")
+    else:
+        print(f"  {dim('Example: https://en.wikipedia.org/wiki/Marxism, Anthroposophy')}")
     print()
 
     raw = ask("Concepts", "")
@@ -317,9 +322,20 @@ def ask_concepts() -> list[tuple[str, str]]:
         print(f"  {yellow('More than 5 concepts — capping at 5 to stay under rate limits.')}")
         items = items[:5]
 
+    # Resolve numbers to URLs from the existing list
+    resolved: list[str] = []
+    for item in items:
+        if item.isdigit():
+            idx = int(item) - 1
+            if 0 <= idx < len(existing):
+                resolved.append(existing[idx].get("wikipedia_url") or item)
+                continue
+            print(f"  {yellow(f'No concept #{item} in the existing list — treating as a title.')}")
+        resolved.append(item)
+
     out: list[tuple[str, str]] = []
-    for i, item in enumerate(items, 1):
-        print(f"\n  {dim(f'[{i}/{len(items)}]')} {item}")
+    for i, item in enumerate(resolved, 1):
+        print(f"\n  {dim(f'[{i}/{len(resolved)}]')} {item}")
         title, url = _validate_wikipedia(item)
         if title:
             out.append((title, url))
